@@ -27,9 +27,10 @@
   #stage { position: relative; flex: 1; overflow: hidden; }
   canvas { display: block; image-rendering: auto; }
   #cv { cursor: crosshair; touch-action: none; }
-  #ui-opts { background: #16202b; border: 1px solid #24333f; border-radius: 6px;
+  #ui-opts, #ui-fs { background: #16202b; border: 1px solid #24333f; border-radius: 6px;
              color: #7fd1ff; padding: 3px 11px; font: inherit; cursor: pointer; }
-  #ui-opts:hover { background: #1c2733; }
+  #ui-opts:hover, #ui-fs:hover { background: #1c2733; }
+  #ui-fs.on { background: #7fd1ff; border-color: #7fd1ff; color: #0b0f14; }
   #mode { position:absolute; top:10px; left:12px; pointer-events:none;
           color:#9fb4c6; font-size:13px; text-shadow:0 1px 2px #000; }
   /* ------------------------------------------------------- options panel */
@@ -99,8 +100,15 @@
     .prow input[type="color"] { width: 64px; height: 40px; }
     .swatches button { width: 84px; height: 30px; }
   }
-  /* Fullscreen + hide-UI: everything chrome goes, the fluid stays. */
-  body.fs #bar, body.fs #mode, body.fs #panel { display: none; }
+  /* Fullscreen + hide-UI: everything chrome goes, the fluid stays — except a
+     lone corner escape hatch: the fullscreen glyph floats bottom-left so a
+     touch device (no Esc, no F) can always get back out. */
+  body.fs #mode, body.fs #panel { display: none; }
+  body.fs #bar { display: block; position: fixed; left: 12px; bottom: 12px;
+                 padding: 0; background: none; border: none; z-index: 6; }
+  body.fs #bar > *:not(#ui-fs) { display: none; }
+  body.fs #ui-fs { opacity: .4; }
+  body.fs #ui-fs:hover, body.fs #ui-fs:focus { opacity: 1; }
 </style>
 </head>
 <body>
@@ -114,6 +122,7 @@
     <div class="chip"><span>gravity</span> <span id="hud-g">down</span></div>
     <div class="chip"><span>paused</span> <span id="hud-pause">no</span></div>
     <button id="ui-opts" title="options (O) — settings, palettes, defaults">⚙</button>
+    <button id="ui-fs" title="fullscreen — F toggles, Esc exits">⛶</button>
     <div id="hint">
       <kbd>drag</kbd> attract &nbsp; <kbd>right-drag</kbd> repel &nbsp;
       <kbd>wheel</kbd> brush size &nbsp;
@@ -155,8 +164,6 @@
         <button id="ui-tension"
                 title="weak attraction in under-dense fluid: cavities and stray bubbles heal, spray droplets ball up and rejoin. Costs a little extra choppiness.">off</button></div>
       <h3>Interface</h3>
-      <div class="prow"><span>fullscreen</span>
-        <button id="ui-fs" title="toggle fullscreen — Esc exits">on</button></div>
       <div class="prow"><label for="ui-hideui">hide UI in full screen</label>
         <input type="checkbox" id="ui-hideui"></div>
       <h3>Input</h3>
@@ -753,7 +760,7 @@
   function applyFsUI() {
     document.body.classList.toggle("fs", fsWanted() && uiHide.checked);
     if (fsWanted()) panel.classList.remove("open");   // panel lives in the bar; unreachable in fs
-    uiFs.textContent = fsWanted() ? "off" : "on";
+    uiFs.classList.toggle("on", fsWanted());          // glyph lights up while fullscreen
   }
   function toggleFullscreen() {
     // If the browser is already in F11 (but not API fullscreen), pressing our
