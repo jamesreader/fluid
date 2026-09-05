@@ -181,7 +181,7 @@
   </div>
 </div>
 
-<script src="sim.js"></script>
+<script src="sim.js?v=@@VER@@"></script>
 <script>
 "use strict";
 // ===========================================================================
@@ -827,8 +827,11 @@
 <script>
 // Service worker: offline + installable when served over http(s). On file://
 // registration throws — that is expected and irrelevant, so it is swallowed.
+// The ?v= stamp is replaced with the build's git sha at image build time:
+// a fresh page always asks for a NEW sw.js URL, which defeats both browser
+// and CDN caching of the worker (unchanged sw.js bytes are never re-fetched).
 if ("serviceWorker" in navigator) {
-  try { navigator.serviceWorker.register("sw.js").catch(function () {}); } catch (e) {}
+  try { navigator.serviceWorker.register("sw.js?v=@@VER@@").catch(function () {}); } catch (e) {}
 }
 </script>
 </body>
