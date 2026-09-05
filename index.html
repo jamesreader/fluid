@@ -49,7 +49,19 @@
   .prow output { color: #7fd1ff; font-variant-numeric: tabular-nums;
                  min-width: 42px; text-align: right; }
   .prow input[type="range"] { flex: 1; min-width: 0; accent-color: #7fd1ff; }
-  .prow input[type="checkbox"] { accent-color: #7fd1ff; transform: scale(1.15); }
+  .prow input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; flex: none; cursor: pointer;
+    width: 40px; height: 23px; border-radius: 12px; position: relative;
+    background: #24303e; border: 1px solid #2c3d4b;
+    transition: background .15s, border-color .15s;
+  }
+  .prow input[type="checkbox"]::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 17px; height: 17px; border-radius: 50%; background: #8fa3b5;
+    transition: left .15s, background .15s;
+  }
+  .prow input[type="checkbox"]:checked { background: #1d5e8a; border-color: #2f7fb8; }
+  .prow input[type="checkbox"]:checked::after { left: 19px; background: #7fd1ff; }
   .prow input[type="color"] { width: 46px; height: 26px; padding: 0; border: 1px solid #2a3446; background: none; border-radius: 4px; }
   .prow button { background: #1c2733; color: #9fd1ff; border: 1px solid #2c3d4b;
                  border-radius: 4px; padding: 2px 9px; font: inherit; cursor: pointer; }
@@ -62,6 +74,31 @@
                      border: 2px solid transparent; cursor: pointer; }
   .swatches button.active { border-color: #7fd1ff; }
   .swatches button:hover { filter: brightness(1.25); }
+  /* ------------------------------------------------- touch-friendly sizing */
+  /* On touch devices every target grows to ~44px and sliders get fat, grabby
+     thumbs; desktop keeps the compact layout. Keyboards hints are moot there. */
+  @media (pointer: coarse) {
+    body { font-size: 16px; }
+    #bar { gap: 10px 12px; padding: 10px 12px; }
+    .chip { font-size: 16px; padding: 8px 12px; }
+    .chip input[type="range"] { width: 110px; height: 30px; }
+    #ui-opts { padding: 8px 18px; font-size: 20px; min-height: 42px; }
+    #hint { display: none; }
+    #panel { width: 304px; font-size: 16px; padding: 14px 16px 30px; }
+    #panel h3 { font-size: 12.5px; margin: 20px 0 8px; }
+    .prow { margin: 15px 0; gap: 12px; }
+    .prow label, .prow span { white-space: normal; }
+    .prow button { min-height: 44px; min-width: 88px; font-size: 16px;
+                   padding: 8px 14px; border-radius: 8px; }
+    .prow select { min-height: 44px; font-size: 16px; }
+    .prow output { min-width: 52px; font-size: 16px; }
+    .prow input[type="range"] { height: 36px; }
+    .prow input[type="checkbox"] { width: 52px; height: 30px; border-radius: 16px; }
+    .prow input[type="checkbox"]::after { width: 24px; height: 24px; top: 3px; left: 3px; }
+    .prow input[type="checkbox"]:checked::after { left: 24px; }
+    .prow input[type="color"] { width: 64px; height: 40px; }
+    .swatches button { width: 84px; height: 30px; }
+  }
   /* Fullscreen + hide-UI: everything chrome goes, the fluid stays. */
   body.fs #bar, body.fs #mode, body.fs #panel { display: none; }
 </style>
