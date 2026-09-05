@@ -1,6 +1,13 @@
-/* Service worker for SPH Liquid: network-first (always fresh while online,
- * and this project changes often), falling back to cache when offline. */
-var CACHE = "sphfluid-v1";
+/* Service worker for SPH Liquid: network-first (always fresh while online),
+ * falling back to cache when offline.
+ *
+ * VERSION DISCIPLINE: bump CACHE below on every deploy that changes
+ * index.html or sim.js. The name change is what forces every installed
+ * copy to evict its stale shell on next visit — the byte-change in THIS
+ * file is also what makes browsers re-check at all (they don't re-fetch an
+ * unchanged sw.js). Forgetting the bump strands old installs on old physics
+ * mixed with fresh HTML, which reads as "UI fine, simulation dead". */
+var CACHE = "sphfluid-v2";
 var ASSETS = [
   "./",
   "./index.html",
@@ -30,8 +37,12 @@ self.addEventListener("fetch", function (e) {
   if (e.request.method !== "GET" || !e.url.startsWith(self.location.origin)) return;
   e.respondWith(
     fetch(e.request).then(function (res) {
-      var copy = res.clone();
-      caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
+      // Only cache good, same-origin responses — a cached 404 or an opaque
+      // redirect would poison the offline fallback.
+      if (res.ok && res.type === "basic") {
+        var copy = res.clone();
+        caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
+      }
       return res;
     }).catch(function () {
       return caches.match(e.request).then(function (hit) {
