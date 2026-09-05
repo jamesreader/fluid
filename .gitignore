@@ -1,0 +1,3 @@
+# development artifacts — the hero shot stays for the README
+_*.png
+!_shot_vel_2s.png

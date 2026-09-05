@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<title>SPH Liquid — 2D Fluid Simulation</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f14; color: #cfd8e3;
+               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #wrap { display: flex; flex-direction: column; height: 100%; }
+  #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 18px;
+         padding: 8px 12px; background: #10161d; border-bottom: 1px solid #1e2a35; }
+  #bar b { color: #7fd1ff; }
+  .chip { background: #16202b; border: 1px solid #24333f; border-radius: 6px;
+          padding: 4px 9px; font-variant-numeric: tabular-nums; }
+  .chip span { color: #8fa3b5; }
+  .chip input[type="range"] { width: 88px; accent-color: #7fd1ff; vertical-align: middle; }
+  #hud-fps { min-width: 64px; text-align: right; }
+  #hud-fps.good { color: #7fe08a; } #hud-fps.bad { color: #ff9d6b; }
+  #hint { margin-left: auto; color: #6d7f8f; font-size: 12.5px; }
+  #hint kbd { background:#1c2733; border:1px solid #2c3d4b; border-radius:4px;
+              padding:1px 5px; font-size:11px; }
+  #stage { position: relative; flex: 1; overflow: hidden; }
+  canvas { display: block; image-rendering: auto; }
+  #cv { cursor: crosshair; touch-action: none; }
+  #ui-opts { background: #16202b; border: 1px solid #24333f; border-radius: 6px;
+             color: #7fd1ff; padding: 3px 11px; font: inherit; cursor: pointer; }
+  #ui-opts:hover { background: #1c2733; }
+  #mode { position:absolute; top:10px; left:12px; pointer-events:none;
+          color:#9fb4c6; font-size:13px; text-shadow:0 1px 2px #000; }
+  /* ------------------------------------------------------- options panel */
+  /* Right-edge slide-out: settings live here so the bar stays a pure HUD
+     and the panel can be collapsed the moment you want the full view. */
+  #panel { position: absolute; top: 0; right: 0; bottom: 0; width: 252px;
+           background: rgba(13, 19, 26, 0.93); border-left: 1px solid #1e2a35;
+           padding: 12px 14px 20px; overflow-y: auto; z-index: 5;
+           transform: translateX(102%); transition: transform .16s ease; }
+  #panel.open { transform: none; }
+  #panel h3 { margin: 15px 0 5px; font-size: 11px; letter-spacing: .08em;
+              text-transform: uppercase; color: #6d7f8f; font-weight: 600; }
+  #panel h3:first-child { margin-top: 0; }
+  .prow { display: flex; align-items: center; justify-content: space-between;
+          gap: 8px; margin: 7px 0; }
+  .prow label, .prow span { color: #8fa3b5; white-space: nowrap; }
+  .prow output { color: #7fd1ff; font-variant-numeric: tabular-nums;
+                 min-width: 42px; text-align: right; }
+  .prow input[type="range"] { flex: 1; min-width: 0; accent-color: #7fd1ff; }
+  .prow input[type="checkbox"] { accent-color: #7fd1ff; transform: scale(1.15); }
+  .prow button { background: #1c2733; color: #9fd1ff; border: 1px solid #2c3d4b;
+                 border-radius: 4px; padding: 2px 9px; font: inherit; cursor: pointer; }
+  .prow button:hover { background: #24303e; }
+  .prow button.na { color: #6d7f8f; }
+  .prow select { background: #1c2733; color: #cfd8e3; border: 1px solid #2c3d4b;
+                 border-radius: 4px; padding: 2px 5px; font: inherit; }
+  .swatches { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 2px; }
+  .swatches button { width: 66px; height: 18px; border-radius: 4px; padding: 0;
+                     border: 2px solid transparent; cursor: pointer; }
+  .swatches button.active { border-color: #7fd1ff; }
+  .swatches button:hover { filter: brightness(1.25); }
+  /* Fullscreen + hide-UI: everything chrome goes, the fluid stays. */
+  body.fs #bar, body.fs #mode, body.fs #panel { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <b>SPH Liquid</b>
+    <div class="chip" id="hud-fps">-- fps</div>
+    <div class="chip"><span>particles</span> <span id="hud-n">--</span></div>
+    <div class="chip"><span>substeps</span> <span id="hud-steps">--</span></div>
+    <div class="chip"><span>KE</span> <span id="hud-ke">--</span></div>
+    <div class="chip"><span>gravity</span> <span id="hud-g">down</span></div>
+    <div class="chip"><span>paused</span> <span id="hud-pause">no</span></div>
+    <button id="ui-opts" title="options (O) — settings, palettes, defaults">⚙</button>
+    <div id="hint">
+      <kbd>drag</kbd> attract &nbsp; <kbd>right-drag</kbd> repel &nbsp;
+      <kbd>wheel</kbd> brush size &nbsp;
+      <kbd>G</kbd> gravity &nbsp; <kbd>R</kbd> reset &nbsp; <kbd>Space</kbd> pause &nbsp;
+      <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> render &nbsp; <kbd>O</kbd> options &nbsp; <kbd>F</kbd> fullscreen
+    </div>
+  </div>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="mode">velocity colour</div>
+    <aside id="panel">
+      <h3>Pointer</h3>
+      <div class="prow"><label for="ui-r">brush</label>
+        <input type="range" id="ui-r" min="20" max="400" step="2"
+               title="interaction radius — the mouse wheel does this too">
+        <output id="hud-r">120</output></div>
+      <div class="prow"><label for="ui-a">attract</label>
+        <input type="range" id="ui-a" min="0" max="300000" step="2000"
+               title="left-drag pull strength">
+        <output id="hud-a">90k</output></div>
+      <div class="prow"><label for="ui-f">repel</label>
+        <input type="range" id="ui-f" min="0" max="300000" step="2000"
+               title="right-drag push strength">
+        <output id="hud-f">90k</output></div>
+      <h3>Fluid</h3>
+      <div class="prow"><label for="ui-n">particles</label>
+        <input type="range" id="ui-n" min="250" max="4000" step="50"
+               title="amount of fluid at the default particle size; extra particles rain in from the top">
+        <output id="val-n">1500</output></div>
+      <div class="prow"><label for="ui-size">particle size</label>
+        <input type="range" id="ui-size" min="4.5" max="16" step="0.5"
+               title="particle resolution — smaller size packs finer and auto-adds particles to keep the same amount of fluid (re-dams on change)">
+        <output id="val-size">9.0px</output></div>
+      <div class="prow"><span>surface tension</span>
+        <button id="ui-tension"
+                title="weak attraction in under-dense fluid: cavities and stray bubbles heal, spray droplets ball up and rejoin. Costs a little extra choppiness.">off</button></div>
+      <h3>Interface</h3>
+      <div class="prow"><span>fullscreen</span>
+        <button id="ui-fs" title="toggle fullscreen — Esc exits">on</button></div>
+      <div class="prow"><label for="ui-hideui">hide UI in full screen</label>
+        <input type="checkbox" id="ui-hideui"></div>
+      <h3>Input</h3>
+      <div class="prow"><span>touch drag</span>
+        <button id="ui-touch" title="finger drag mode: off / repel / attract">off</button></div>
+      <div class="prow"><span>tilt gravity</span>
+        <button id="ui-tilt" title="gravity follows device tilt (accelerometer)">off</button></div>
+      <h3>Render</h3>
+      <div class="prow"><span>velocity palette</span></div>
+      <div class="swatches" id="ui-pal"></div>
+      <div class="prow"><label for="ui-def">default mode</label>
+        <select id="ui-def" title="render mode this page opens with">
+          <option value="1">1 — dots</option>
+          <option value="2">2 — velocity colour</option>
+          <option value="3">3 — metaball</option>
+        </select></div>
+    </aside>
+  </div>
+</div>
+
+<script src="sim.js"></script>
+<script>
+"use strict";
+// ===========================================================================
+// Renderer + interaction for the SPH liquid sim. Physics lives in sim.js
+// (loaded above); this file only handles canvas drawing, pointer input,
+// keyboard, the render loop, and the HUD.
+// ===========================================================================
+(function () {
+  var W = 800, H = 600;          // logical simulation box (sim.js defaults)
+  var cv = document.getElementById("cv");
+  var ctx = cv.getContext("2d");
+  var stage = document.getElementById("stage");
+
+  // High-DPI backing store: map logical 800x600 to device pixels for crispness.
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = W * dpr; cv.height = H * dpr;
+  cv.style.width = "100%"; cv.style.height = "100%";
+  // object-fit: contain keeps the 4:3 box centred without stretching the fluid.
+  ctx.imageSmoothingEnabled = true;
+
+  var sim = new SPHSim({ width: W, height: H });
+
+  // ---------------------------------------------------------- brush controls
+  // sim.pointerRadius / sim.attractForce / sim.repelForce are plain properties:
+  // the sliders write them directly, the mouse wheel resizes the brush (also
+  // mid-drag), and syncUI() keeps widgets honest after programmatic changes.
+  var uiR = document.getElementById("ui-r"), hudR = document.getElementById("hud-r");
+  var uiA = document.getElementById("ui-a"), hudA = document.getElementById("hud-a");
+  var uiF = document.getElementById("ui-f"), hudF = document.getElementById("hud-f");
+  var RMIN = 20, RMAX = 400;
+  function fmtK(v) { return v >= 1000 ? (v / 1000).toFixed(v < 10000 ? 1 : 0) + "k" : String(v | 0); }
+  function setRadius(r) {
+    sim.pointerRadius = Math.max(RMIN, Math.min(RMAX, r));
+    hudR.textContent = Math.round(sim.pointerRadius);
+    if (document.activeElement !== uiR) uiR.value = sim.pointerRadius;
+  }
+  function syncUI() {
+    uiR.value = sim.pointerRadius; hudR.textContent = Math.round(sim.pointerRadius);
+    uiA.value = sim.attractForce;  hudA.textContent = fmtK(sim.attractForce);
+    uiF.value = sim.repelForce;    hudF.textContent = fmtK(sim.repelForce);
+  }
+  uiR.addEventListener("input", function () { setRadius(+uiR.value); saveOpt("radius", sim.pointerRadius); });
+  uiA.addEventListener("input", function () { sim.attractForce = +uiA.value; hudA.textContent = fmtK(sim.attractForce); saveOpt("attract", +uiA.value); });
+  uiF.addEventListener("input", function () { sim.repelForce = +uiF.value; hudF.textContent = fmtK(sim.repelForce); saveOpt("repel", +uiF.value); });
+  cv.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    // Multiplicative resize feels right across the whole 20..400px range;
+    // normalise line-mode wheel deltas (Firefox) to pixels first.
+    var d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    setRadius(sim.pointerRadius * Math.exp(-d * 0.0015));
+    saveOpt("radius", sim.pointerRadius);
+  }, { passive: false });
+  syncUI();
+
+  // ------------------------------------------------------- user options store
+  // Persisted in localStorage: the page reopens the way you left it. `mode`
+  // is the DEFAULT render mode, set explicitly from the panel — pressing
+  // 1/2/3 switches the current mode without touching the saved default.
+  var OPT_KEY = "sph-fli…s-1";
+  function loadOpts() {
+    try { return JSON.parse(localStorage.getItem(OPT_KEY)) || {}; } catch (e) { return {}; }
+  }
+  function saveOpt(k, v) {
+    var o = loadOpts(); o[k] = v;
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+  var opts = loadOpts();
+
+  // ------------------------------------------------------------------ state
+  var paused = false;
+  var renderMode = (opts.mode === 1 || opts.mode === 3) ? opts.mode : 2;  // 1 dots, 2 velocity, 3 metaball
+  var lastT = performance.now();
+  var fpsEMA = 60;               // exponential-moving-average fps
+  var hudTimer = 0;
+  var modeLabels = { 1: "dots", 2: "velocity colour", 3: "metaball blobs" };
+  // The particles slider is a VOLUME knob: it stores how much fluid there is
+  // at the default 9px size ("nominal"). The ACTUAL count is scaled by the
+  // current particle size so the amount of water is resolution-independent
+  // (N ~ 1/s^2), clamped to the performance budget.
+  var nominal = isFinite(+opts.count) ? Math.max(250, Math.min(4000, +opts.count)) : 1500;
+  var uiN = document.getElementById("ui-n"), valN = document.getElementById("val-n");
+  function actualN() {
+    return Math.max(250, Math.min(4000, Math.round(nominal * 81 / (sim.spacing * sim.spacing))));
+  }
+  function syncCounts() {
+    uiN.value = nominal;
+    valN.textContent = sim.N;
+    document.getElementById("hud-n").textContent = sim.N;
+  }
+  // Applied on release (change), not per input event — reallocation + a rain
+  // of new particles is an event, not something to spam 60x a second.
+  uiN.addEventListener("change", function () {
+    nominal = +uiN.value;
+    sim.setCount(actualN());
+    syncCounts();
+    saveOpt("count", nominal);
+  });
+
+  // Particle SIZE: rescales the whole physics chain (sim.setScale), keeps the
+  // fluid volume constant (count follows size), re-dams the world, and resizes
+  // the rendered dots + metaball sprite to match.
+  var uiSize = document.getElementById("ui-size"), valSize = document.getElementById("val-size");
+  function applySize(px, persist) {
+    sim.setScale(px);
+    sim.setCount(actualN());
+    sim.reset();
+    dotR = Math.max(1.2, sim.spacing / 3);
+    SR = sim.spacing * 3.78;
+    buildSprite();
+    valSize.textContent = sim.spacing.toFixed(1) + "px";
+    syncCounts();
+    if (persist) saveOpt("size", sim.spacing);
+  }
+  uiSize.addEventListener("change", function () { applySize(+uiSize.value, true); });
+
+  // Surface tension: flips the pressure floor from "clamp at 0" to
+  // "floor at -eps*k*rho0" (eps = SPHSim.TENSION_EPS, a tested-safe value).
+  // It's live — no re-dam needed; the very next substep already attracts.
+  var uiTns = document.getElementById("ui-tension");
+  function setTension(on) {
+    sim.tension = on ? SPHSim.TENSION_EPS : 0;
+    uiTns.textContent = on ? "on" : "off";
+  }
+  uiTns.addEventListener("click", function () {
+    var on = sim.tension === 0;
+    setTension(on);
+    saveOpt("tension", on ? 1 : 0);
+  });
+
+  // Metaball offscreen buffers. The soft density field is stamped at 1/4 res
+  // (cheap) and blurred THERE too — blur is the expensive filter, so it lives
+  // where pixels are few. The THRESHOLD, however, happens at full device
+  // resolution: `up` holds the bilinear upscale of the blurred field, and
+  // `body` is made from it by drawing `up` onto it THRESH_K times. Repeated
+  // source-over compositing computes alpha' = 1-(1-a)^K per DEVICE pixel,
+  // hardening the soft field into a solid body. Unlike the old low-res
+  // contrast() pass, the iso-surface is evaluated per device pixel against a
+  // continuous gradient — so edges are anti-aliased and round, not chunky.
+  var MS = 0.25;                 // metaball field scale (1/4)
+  var mw = Math.max(1, Math.round(W * MS));
+  var mh = Math.max(1, Math.round(H * MS));
+  var field = document.createElement("canvas");
+  field.width = mw; field.height = mh;
+  var fctx = field.getContext("2d");
+  var field2 = document.createElement("canvas");   // blurred field lives here
+  field2.width = mw; field2.height = mh;
+  var f2ctx = field2.getContext("2d");
+  var up = document.createElement("canvas");       // device-res upscale
+  up.width = cv.width; up.height = cv.height;
+  var uctx = up.getContext("2d");
+  var body = document.createElement("canvas");     // thresholded body
+  body.width = cv.width; body.height = cv.height;
+  var bctx = body.getContext("2d");
+  var THRESH_K = 4;              // alpha hardening iterations (edge steepness)
+  // A soft radial sprite stamped per particle to build a density field.
+  // Its radius tracks particle size (SR ~ 3.8 x spacing) so merged blobs
+  // stay equally gooey at any resolution.
+  var sprite = document.createElement("canvas");
+  var SR = 34;
+  function buildSprite() {
+    sprite.width = sprite.height = SR * 2;
+    var sctx = sprite.getContext("2d");
+    var g = sctx.createRadialGradient(SR, SR, 0, SR, SR, SR);
+    g.addColorStop(0, "rgba(255,255,255,0.85)");
+    g.addColorStop(0.4, "rgba(255,255,255,0.30)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    sctx.fillStyle = g; sctx.fillRect(0, 0, SR * 2, SR * 2);
+  }
+  buildSprite();
+
+  // Velocity -> colour: speed 0..maxVc sampled from a stop-based palette,
+  // pre-bucketed into NB colors so the whole field draws in a few batched
+  // fills (one fillStyle per bucket) instead of one fill per particle.
+  // Swatches in the panel are built from the SAME stops — what you click is
+  // what renders.
+  var maxVc = 700;               // colour scale ceiling (px/s)
+  var NB = 28;                   // number of speed buckets
+  var dotR = 3;                  // drawn particle radius; tracks particle size
+  var bucketColors = new Array(NB);
+  var bucketIdx = new Int32Array(sim.N);
+  var PALETTES = {
+    thermal:  [[0, [0, 90, 220]], [0.5, [0, 255, 220]], [1, [255, 45, 0]]],
+    inferno:  [[0, [14, 10, 48]], [0.35, [132, 20, 116]], [0.65, [236, 72, 30]], [0.85, [250, 165, 22]], [1, [255, 246, 132]]],
+    ice:      [[0, [246, 252, 255]], [0.45, [120, 205, 255]], [0.75, [36, 110, 226]], [1, [8, 16, 84]]],
+    spectrum: [[0, [70, 20, 200]], [0.25, [0, 170, 255]], [0.5, [0, 226, 96]], [0.75, [250, 226, 46]], [1, [250, 56, 46]]],
+    mono:     [[0, [44, 50, 58]], [1, [255, 255, 255]]],
+  };
+  var palOrder = Object.keys(PALETTES);
+  var palBox = document.getElementById("ui-pal");
+  var palette = "thermal";
+  function samplePalette(stops, t) {
+    for (var s = 1; s < stops.length; s++) {
+      if (t <= stops[s][0] || s === stops.length - 1) {
+        var a = stops[s - 1], b = stops[s];
+        var span = b[0] - a[0];
+        var u = span > 0 ? (t - a[0]) / span : 1;
+        u = u < 0 ? 0 : u > 1 ? 1 : u;
+        return [a[1][0] + (b[1][0] - a[1][0]) * u,
+                a[1][1] + (b[1][1] - a[1][1]) * u,
+                a[1][2] + (b[1][2] - a[1][2]) * u];
+      }
+    }
+    return stops[0][1];
+  }
+  function applyPalette(name) {
+    if (!PALETTES[name]) name = "thermal";
+    palette = name;
+    var stops = PALETTES[name];
+    for (var b = 0; b < NB; b++) {
+      var c = samplePalette(stops, b / (NB - 1));
+      bucketColors[b] = "rgb(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + ")";
+    }
+    for (var i = 0; i < palBox.children.length; i++)
+      palBox.children[i].classList.toggle("active", palOrder[i] === name);
+  }
+  palOrder.forEach(function (name) {
+    var btn = document.createElement("button");
+    btn.title = name;
+    btn.style.background = "linear-gradient(to right," + PALETTES[name].map(function (st) {
+      return "rgb(" + st[1].join(",") + ") " + (st[0] * 100) + "%";
+    }).join(",") + ")";
+    btn.addEventListener("click", function () { applyPalette(name); saveOpt("palette", name); });
+    palBox.appendChild(btn);
+  });
+
+  // --------------------------------------------------------------- drawing
+  function render() {
+    // Letterbox transform: centre the logical 800x600 box in the canvas.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#0b0f14";
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    var scale = Math.min(cv.width / W, cv.height / H);
+    var ox = (cv.width - W * scale) / 2, oy = (cv.height - H * scale) / 2;
+    ctx.setTransform(scale * dpr / dpr, 0, 0, scale * dpr / dpr, ox, oy);
+    // Simpler: work in logical units after applying scale + offset.
+    ctx.setTransform(scale, 0, 0, scale, ox, oy);
+    ctx.fillStyle = "#0e141b";
+    ctx.fillRect(0, 0, W, H);
+
+    if (renderMode === 3) { renderMetaball(scale); return; }
+
+    ctx.beginPath();
+    if (renderMode === 1) {
+      // plain dots
+      ctx.fillStyle = "#4db4ff";
+      ctx.globalAlpha = 0.9;
+      for (var i = 0; i < sim.N; i++) {
+        var x = sim.px[i], y = sim.py[i];
+        ctx.moveTo(x + dotR, y);
+        ctx.arc(x, y, dotR, 0, 6.2832);
+      }
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    } else {
+      // velocity-coloured dots, bucketed into NB speed colors and batched.
+      // First pass: assign each particle a bucket from its speed.
+      var invScale = (NB - 1) / maxVc;
+      for (var j = 0; j < sim.N; j++) {
+        var s = Math.sqrt(sim.vx[j] * sim.vx[j] + sim.vy[j] * sim.vy[j]);
+        var bi = (s * invScale) | 0;
+        if (bi >= NB) bi = NB - 1;
+        bucketIdx[j] = bi;
+      }
+      // Second pass: one beginPath+fill per non-empty bucket.
+      if (bucketIdx.length < sim.N) bucketIdx = new Int32Array(sim.N);
+      var used = new Array(NB).fill(false);
+      for (var b = 0; b < NB; b++) {
+        ctx.fillStyle = bucketColors[b];
+        ctx.beginPath();
+        for (var k = 0; k < sim.N; k++) {
+          if (bucketIdx[k] !== b) continue;
+          var x2 = sim.px[k], y2 = sim.py[k];
+          ctx.moveTo(x2 + dotR, y2);
+          ctx.arc(x2, y2, dotR, 0, 6.2832);
+        }
+        ctx.fill();
+      }
+    }
+    drawPointer();
+  }
+
+  // Metaball pipeline: stamp sprites -> blur (all at 1/4 res) -> bilinear
+  // upscale to device res -> alpha-power threshold (K plain draws, GPU fill
+  // only, no full-res filter) -> additive blit of the white body onto the
+  // page. The old version thresholded at 1/8 res, which quantised the surface
+  // to 8px blocks — the chunkiness this replaces.
+  function renderMetaball(scale) {
+    // 1. additive soft field at 1/4 res
+    fctx.setTransform(1, 0, 0, 1, 0, 0);
+    fctx.clearRect(0, 0, mw, mh);
+    fctx.globalCompositeOperation = "lighter";
+    var sr = SR * MS;
+    for (var i = 0; i < sim.N; i++) {
+      fctx.drawImage(sprite, sim.px[i] * MS - sr, sim.py[i] * MS - sr, sr * 2, sr * 2);
+    }
+    fctx.globalCompositeOperation = "source-over";
+    // 2. blur the small field (cheap where pixels are few)
+    f2ctx.setTransform(1, 0, 0, 1, 0, 0);
+    f2ctx.clearRect(0, 0, mw, mh);
+    f2ctx.filter = "blur(1.1px)";
+    f2ctx.drawImage(field, 0, 0);
+    f2ctx.filter = "none";
+    // 3. bilinear upscale into the letterbox rect at device resolution
+    var ox = (cv.width - W * scale) / 2, oy = (cv.height - H * scale) / 2;
+    uctx.setTransform(1, 0, 0, 1, 0, 0);
+    uctx.clearRect(0, 0, up.width, up.height);
+    uctx.imageSmoothingEnabled = true;
+    uctx.imageSmoothingQuality = "high";
+    uctx.drawImage(field2, 0, 0, mw, mh, ox, oy, W * scale, H * scale);
+    // 4. threshold: alpha' = 1-(1-a)^K by compositing the upscale K times
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.clearRect(0, 0, body.width, body.height);
+    for (var q = 0; q < THRESH_K; q++) bctx.drawImage(up, 0, 0);
+    // 5. add the white body onto the page (outside the body adds nothing)
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(body, 0, 0);
+    ctx.restore();
+    drawPointer();
+  }
+
+  function drawPointer() {
+    var pt = sim.pointer;
+    if (!pt.active) return;
+    ctx.strokeStyle = pt.mode > 0 ? "rgba(120,220,120,0.9)" : "rgba(255,120,120,0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, sim.pointerRadius, 0, 6.2832);
+    ctx.stroke();
+  }
+
+  // ------------------------------------------------------------------ tilt
+  // Gravity follows the device accelerometer. DeviceMotion's
+  // accelerationIncludingGravity reports, in m/s^2, the REACTION force in
+  // device axes (x right, y screen-up, z out-of-screen) — i.e. minus gravity.
+  // The screen-space gravity the fluid feels is therefore gx = -a.x,
+  // gy = +a.y, scaled from m/s^2 to sim px/s^2. This covers every pose for
+  // free: upright -> down, tipped -> flows sideways, flat on a table ->
+  // zero-g, screen facing down -> zero-g, screen-down-upside -> gravity up.
+  var uiTilt = document.getElementById("ui-tilt");
+  var motionSupported = (typeof DeviceMotionEvent !== "undefined") && ("ondevicemotion" in window);
+  var tilting = false, gSaved = null;
+  if (!motionSupported) { uiTilt.textContent = "n/a"; uiTilt.classList.add("na"); }
+  function onMotion(e) {
+    var a = e.accelerationIncludingGravity || e.acceleration;
+    if (!a) return;
+    var gx = -(a.x || 0), gy = a.y || 0;
+    var m = Math.sqrt(gx * gx + gy * gy);
+    var DEAD = 0.25;                            // m/s^2 noise floor
+    if (m <= DEAD) { sim.gx = 0; sim.gy = 0; return; }
+    var k = sim.gravity * ((m - DEAD) / m) / 9.81;
+    sim.gx = gx * k; sim.gy = gy * k;
+  }
+  function setTilt(on) {
+    if (on && !tilting) {
+      if (!motionSupported) { uiTilt.textContent = "n/a"; return; }
+      var start = function () {
+        gSaved = { x: sim.gx, y: sim.gy };
+        window.addEventListener("devicemotion", onMotion);
+        tilting = true; uiTilt.textContent = "on";
+      };
+      // iOS 13+ gates motion sensors behind a permission that must be
+      // requested from a user gesture — this button click is that gesture.
+      if (typeof DeviceMotionEvent.requestPermission === "function") {
+        DeviceMotionEvent.requestPermission().then(function (res) {
+          if (res === "granted") start();
+          else uiTilt.textContent = "denied";
+        }, function () { uiTilt.textContent = "denied"; });
+      } else start();
+    } else if (!on && tilting) {
+      window.removeEventListener("devicemotion", onMotion);
+      tilting = false;
+      sim.gx = gSaved.x; sim.gy = gSaved.y;
+      uiTilt.textContent = "off";
+    }
+  }
+  uiTilt.addEventListener("click", function () { setTilt(!tilting); });
+
+  // --------------------------------------------------------------- HUD
+  var elFps = document.getElementById("hud-fps");
+  var elSteps = document.getElementById("hud-steps");
+  var elKE = document.getElementById("hud-ke");
+  var elG = document.getElementById("hud-g");
+  var elPause = document.getElementById("hud-pause");
+  var elMode = document.getElementById("mode");
+  function gravName() {
+    if (tilting) return "tilt";
+    if (sim.gx === 0 && sim.gy > 0) return "down";
+    if (sim.gx === 0 && sim.gy < 0) return "up";
+    if (sim.gx < 0) return "left";
+    if (sim.gx > 0) return "right";
+    return "off";
+  }
+  function updateHUD(fps, steps) {
+    elFps.textContent = fps.toFixed(0) + " fps";
+    elFps.className = fps >= 50 ? "good" : "bad";
+    elSteps.textContent = steps;
+    elKE.textContent = sim.kineticEnergy().toExponential(1);
+    elG.textContent = gravName();
+    elPause.textContent = paused ? "yes" : "no";
+    elMode.textContent = modeLabels[renderMode];
+  }
+
+  // --------------------------------------------------------------- loop
+  function frame(now) {
+    var dt = (now - lastT) / 1000;
+    lastT = now;
+    if (dt > 0.1) dt = 0.1;        // clamp big stalls (tab switch etc.)
+    var instFps = dt > 0 ? 1 / dt : 60;
+    fpsEMA += (instFps - fpsEMA) * 0.12;
+
+    var steps = 0;
+    if (!paused) steps = sim.step(dt);
+
+    render();
+    hudTimer += dt;
+    if (hudTimer >= 0.2) { updateHUD(fpsEMA, steps); hudTimer = 0; }
+    requestAnimationFrame(frame);
+  }
+
+  // ----------------------------------------------------------- interaction
+  // Convert a pointer event to logical 800x600 coordinates.
+  function toLogical(ev) {
+    var rect = cv.getBoundingClientRect();
+    var scale = Math.min(rect.width / W, rect.height / H);
+    var ox = (rect.width - W * scale) / 2, oy = (rect.height - H * scale) / 2;
+    return { x: (ev.clientX - rect.left - ox) / scale, y: (ev.clientY - rect.top - oy) / scale };
+  }
+  cv.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  // ---------------------------------------------------------------- pointers
+  // Unified mouse + touch + pen. Mouse keeps the classic mapping (left =
+  // attract, right = repel). Touch/pen use the `touch` chip mode — fingers
+  // have no right-click, so the default there is repel (auto-detected via
+  // (pointer: coarse); cycle it off/repel/attract with the chip button).
+  // One pointer at a time (the sim has a single interaction point); the
+  // first pointer down owns it until it lifts. touch-action:none on #cv
+  // keeps the browser from stealing drags as scroll/zoom.
+  function coarsePointer() {
+    try { return window.matchMedia("(pointer: coarse)").matches; } catch (e) { return false; }
+  }
+  var touchMode = coarsePointer() ? -1 : 0;
+  var uiT = document.getElementById("ui-touch");
+  function touchLabel() { return touchMode === 0 ? "off" : touchMode > 0 ? "attract" : "repel"; }
+  uiT.textContent = touchLabel();
+  uiT.addEventListener("click", function () {
+    touchMode = touchMode === 0 ? -1 : touchMode < 0 ? 1 : 0;   // off -> repel -> attract -> off
+    uiT.textContent = touchLabel();
+    saveOpt("touch", touchMode);
+  });
+
+  var pointerId = -1;
+  cv.addEventListener("pointerdown", function (e) {
+    if (pointerId !== -1) return;                       // second finger: ignore
+    var mode = e.pointerType === "mouse" ? (e.button === 2 ? -1 : 1) : touchMode;
+    if (mode === 0) return;                             // touch input disabled
+    var p = toLogical(e);
+    sim.pointer.x = p.x; sim.pointer.y = p.y;
+    sim.pointer.mode = mode; sim.pointer.active = true;
+    pointerId = e.pointerId;
+    if (cv.setPointerCapture) { try { cv.setPointerCapture(e.pointerId); } catch (err) {} }
+    e.preventDefault();
+  });
+  cv.addEventListener("pointermove", function (e) {
+    if (e.pointerId !== pointerId) return;
+    var p = toLogical(e);
+    sim.pointer.x = p.x; sim.pointer.y = p.y;
+  });
+  function endPointer(e) {
+    if (e.pointerId === pointerId) {
+      pointerId = -1;
+      sim.pointer.active = false; sim.pointer.mode = 0;
+    }
+  }
+  cv.addEventListener("pointerup", endPointer);
+  cv.addEventListener("pointercancel", endPointer);
+  window.addEventListener("pointerup", endPointer);    // capture-failure fallback
+
+  // ------------------------------------------------------------- options panel
+  var panel = document.getElementById("panel");
+  var uiOpts = document.getElementById("ui-opts");
+  function togglePanel() { panel.classList.toggle("open"); }
+  uiOpts.addEventListener("click", togglePanel);
+
+  // --------------------------------------------------------------- fullscreen
+  // Three independent sources of "are we fullscreen", OR'd together, so the
+  // app plays nicely with the browser's own controls instead of fighting them:
+  //   1. API fullscreen  — our F / button (requestFullscreen). Fires
+  //                        fullscreenchange; Esc or browser exit ends it.
+  //   2. Browser F11     — Chrome/Edge/Firefox "hide browser UI". NOT the API:
+  //                        no fullscreenchange, fullscreenElement stays null.
+  //                        Detected geometrically below (viewport == window
+  //                        bounds only happens once the chrome is gone), which
+  //                        is also why we NEVER intercept the F11 key itself.
+  //   3. Manual fallback — browsers with no API (iOS Safari): hide all chrome
+  //                        ourselves, which is the part that actually matters.
+  // "hide UI" decides whether any of the three also strips the bar/HUD.
+  var uiFs = document.getElementById("ui-fs");
+  var uiHide = document.getElementById("ui-hideui");
+  var manualFs = false;
+  function fsActive() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+  function standaloneMode() {           // installed PWA: inner==outer always
+    try { return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true; }
+    catch (e) { return false; }
+  }
+  function browserFs() {
+    // Only meaningful on a desktop window with collapsible chrome. On touch
+    // devices the URL bar grows/shrinks on scroll (inner != outer) so this is
+    // meaningless; in a standalone PWA the window has no chrome at all.
+    if (coarsePointer() || standaloneMode()) return false;
+    if (!window.outerHeight || !window.outerWidth) return false;
+    // Two-sided, tight epsilon: windowed mode always loses pixels to chrome,
+    // and a two-sided test is immune to BOTH failure directions of browser
+    // zoom (inner is CSS px, outer is DIP: zoom<100% inflates inner, >100%
+    // deflates it, and either way |diff| > 1). The price: F11 + non-100%
+    // zoom is not detected — false negatives only, never phantom hide-UI.
+    return Math.abs(window.innerHeight - window.outerHeight) <= 1 &&
+           Math.abs(window.innerWidth - window.outerWidth) <= 1;
+  }
+  function fsWanted() { return manualFs || fsActive() || browserFs(); }
+  function applyFsUI() {
+    document.body.classList.toggle("fs", fsWanted() && uiHide.checked);
+    if (fsWanted()) panel.classList.remove("open");   // panel lives in the bar; unreachable in fs
+    uiFs.textContent = fsWanted() ? "off" : "on";
+  }
+  function toggleFullscreen() {
+    // If the browser is already in F11 (but not API fullscreen), pressing our
+    // control shouldn't stack a second fullscreen on top — just resync the UI.
+    if (browserFs() && !fsActive() && !manualFs) { applyFsUI(); return; }
+    var el = document.documentElement;
+    var req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!req) { manualFs = !manualFs; applyFsUI(); return; }
+    if (fsActive()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else req.call(el);
+  }
+  uiFs.addEventListener("click", toggleFullscreen);
+  uiHide.addEventListener("change", function () { saveOpt("hideui", uiHide.checked); applyFsUI(); });
+  ["fullscreenchange", "webkitfullscreenchange"].forEach(function (ev) {
+    document.addEventListener(ev, applyFsUI);
+  });
+  // F11 fires none of the above events, but it always resizes the viewport —
+  // this (plus orientationchange) is what makes us notice the browser's mode.
+  window.addEventListener("resize", applyFsUI);
+  window.addEventListener("orientationchange", applyFsUI);
+
+  window.addEventListener("keydown", function (e) {
+    // Don't hijack keys while a control has focus (arrows belong to it).
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT")) return;
+    var k = e.key.toLowerCase();
+    if (k === " ") { e.preventDefault(); paused = !paused; }
+    else if (k === "r") { sim.reset(); }
+    else if (k === "g") { if (tilting) setTilt(false); sim.cycleGravity(); }
+    else if (k === "o") { togglePanel(); }
+    else if (k === "f") { toggleFullscreen(); }
+    else if (k === "escape" && panel.classList.contains("open")) { togglePanel(); }
+    else if (k === "1" || k === "2" || k === "3") {
+      renderMode = +k;
+      document.getElementById("ui-def").value = "";   // current != default
+    }
+  });
+
+  // ---------------------------------------------------------------- startup
+  // Apply persisted options after all widgets exist, then wire the default-
+  // mode select. Keys 1/2/3 still change the CURRENT mode without writing
+  // the default; the select sets both and blanks itself when they diverge.
+  if (isFinite(opts.radius)) setRadius(opts.radius);
+  if (isFinite(opts.attract)) sim.attractForce = opts.attract;
+  if (isFinite(opts.repel)) sim.repelForce = opts.repel;
+  if (opts.touch === -1 || opts.touch === 0 || opts.touch === 1) {
+    touchMode = opts.touch; uiT.textContent = touchLabel();
+  }
+  if (+opts.tension) setTension(true);
+  uiHide.checked = opts.hideui === undefined ? true : !!opts.hideui;
+  applySize(isFinite(+opts.size) ? +opts.size : 9, false);   // scales count to volume
+  applyFsUI();                                               // labels + F11-already-on sync
+  applyPalette(opts.palette);
+  var uiDef = document.getElementById("ui-def");
+  uiDef.value = String(renderMode);
+  uiDef.addEventListener("change", function () {
+    renderMode = +uiDef.value;
+    saveOpt("mode", renderMode);
+  });
+  syncUI();
+
+  requestAnimationFrame(frame);
+})();
+</script>
+<script>
+// Service worker: offline + installable when served over http(s). On file://
+// registration throws — that is expected and irrelevant, so it is swallowed.
+if ("serviceWorker" in navigator) {
+  try { navigator.serviceWorker.register("sw.js").catch(function () {}); } catch (e) {}
+}
+</script>
+</body>
+</html>
