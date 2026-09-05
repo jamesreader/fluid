@@ -8,9 +8,9 @@ COPY icons /usr/share/nginx/html/icons
 # deploy log so a silent no-stamp can never happen on our watch.
 ARG GIT_COMMIT=
 ARG BUILD_DATE=
-RUN V="$GIT_COMMIT"; \
-    if [ -z "$V" ] || [ "$V" = local ] || [ "$V" = 0 ]; then V="$BUILD_DATE"; fi; \
-    if [ -z "$V" ] || [ "$V" = 0 ]; then V="$(date -u +%s)"; fi; \
-    sed -i "s/@@VER@@/$(printf %.7s "$V")/g" /usr/share/nginx/html/index.html; \
+RUN VER=""; \
+    [ -z "$GIT_COMMIT" ] || [ "$GIT_COMMIT" = local ] || [ "$GIT_COMMIT" = 0 ] || VER="$(printf %.7s "$GIT_COMMIT")"; \
+    if [ -z "$VER" ]; then VER="$(date -u +%s)"; fi; \
+    sed -i "s/@@VER@@/$VER/g" /usr/share/nginx/html/index.html; \
     grep -o 'sim\.js?v=[^"]*' /usr/share/nginx/html/index.html
 EXPOSE 80

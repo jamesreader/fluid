@@ -100,15 +100,10 @@
     .prow input[type="color"] { width: 64px; height: 40px; }
     .swatches button { width: 84px; height: 30px; }
   }
-  /* Fullscreen + hide-UI: everything chrome goes, the fluid stays — except a
-     lone corner escape hatch: the fullscreen glyph floats bottom-left so a
-     touch device (no Esc, no F) can always get back out. */
-  body.fs #mode, body.fs #panel { display: none; }
-  body.fs #bar { display: block; position: fixed; left: 12px; bottom: 12px;
-                 padding: 0; background: none; border: none; z-index: 6; }
-  body.fs #bar > *:not(#ui-fs) { display: none; }
-  body.fs #ui-fs { opacity: .4; }
-  body.fs #ui-fs:hover, body.fs #ui-fs:focus { opacity: 1; }
+  /* Fullscreen + hide-UI: everything chrome goes, the fluid stays.
+     Ways out: Esc / F / the toggle before entering; on Android, swipe from
+     the edge for the system bar and press back. iOS users are on their own. */
+  body.fs #bar, body.fs #mode, body.fs #panel { display: none; }
 </style>
 </head>
 <body>
