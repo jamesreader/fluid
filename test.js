@@ -273,6 +273,35 @@ else fail("(g) grape clustering or instability (rhoAvg=" + withT.rhoAvg.toFixed(
           " rhoMax=" + withT.rhoMax.toFixed(2) + " bounds=" + withT.bounds + ")");
 
 /* ------------------------------------------------------------------ */
+/* (h) aspect-adaptive box: resizeBox mid-run keeps the sim sane       */
+/* ------------------------------------------------------------------ */
+console.log("");
+console.log("(h) resizeBox (viewport aspect tracking)");
+{
+  var hs = new SPHSim({ width: 800, height: 600 });
+  for (var hi = 0; hi < 60; hi++) hs.step();
+  hs.resizeBox(800, 375);                       // wide viewport: box squats
+  var hok = true;
+  for (var hk = 0; hk < 90; hk++) {
+    hs.step();
+    for (var hq = 0; hq < hs.N; hq++) {
+      if (!isFinite(hs.px[hq]) || !isFinite(hs.py[hq]) ||
+          !isFinite(hs.vx[hq]) || !isFinite(hs.vy[hq])) hok = false;
+      if (hs.px[hq] < -5 || hs.px[hq] > 805 || hs.py[hq] < -5 || hs.py[hq] > 380) hok = false;
+    }
+  }
+  if (hok) pass("(h) squat box: nothing escapes or NaNs after resize");
+  else fail("(h) squat box: escapes or NaN after resizeBox(800,375)");
+
+  hs.resizeBox(800, 1600);                      // portrait viewport: box stands up
+  for (hi = 0; hi < 60; hi++) hs.step();
+  hok = hs.allInBounds();
+  for (hq = 0; hq < hs.N; hq++) if (!isFinite(hs.px[hq]) || !isFinite(hs.vy[hq])) hok = false;
+  if (hok) pass("(h) tall box: settles back in bounds, finite");
+  else fail("(h) tall box lost particles");
+}
+
+/* ------------------------------------------------------------------ */
 console.log("");
 if (PASS) {
   console.log("ALL TESTS PASSED");

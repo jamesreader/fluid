@@ -50,6 +50,7 @@
                  min-width: 42px; text-align: right; }
   .prow input[type="range"] { flex: 1; min-width: 0; accent-color: #7fd1ff; }
   .prow input[type="checkbox"] { accent-color: #7fd1ff; transform: scale(1.15); }
+  .prow input[type="color"] { width: 46px; height: 26px; padding: 0; border: 1px solid #2a3446; background: none; border-radius: 4px; }
   .prow button { background: #1c2733; color: #9fd1ff; border: 1px solid #2c3d4b;
                  border-radius: 4px; padding: 2px 9px; font: inherit; cursor: pointer; }
   .prow button:hover { background: #24303e; }
@@ -100,6 +101,10 @@
         <input type="range" id="ui-f" min="0" max="300000" step="2000"
                title="right-drag push strength">
         <output id="hud-f">90k</output></div>
+      <div class="prow"><label for="ui-brush">show brush</label>
+        <input type="checkbox" id="ui-brush" checked title="draw the brush ring while interacting"></div>
+      <div class="prow"><label for="ui-brushcol">brush colour</label>
+        <input type="color" id="ui-brushcol" value="#4db4ff"></div>
       <h3>Fluid</h3>
       <div class="prow"><label for="ui-n">particles</label>
         <input type="range" id="ui-n" min="250" max="4000" step="50"
@@ -122,6 +127,10 @@
         <button id="ui-touch" title="finger drag mode: off / repel / attract">off</button></div>
       <div class="prow"><span>tilt gravity</span>
         <button id="ui-tilt" title="gravity follows device tilt (accelerometer)">off</button></div>
+      <div class="prow"><label for="ui-gain">tilt sensitivity</label>
+        <input type="range" id="ui-gain" min="0.5" max="4" step="0.1" value="1.5"
+               title="how hard tilt pushes the fluid; rest gravity is capped at 1.6x">
+        <output id="val-gain">1.5</output></div>
       <h3>Render</h3>
       <div class="prow"><span>velocity palette</span></div>
       <div class="swatches" id="ui-pal"></div>
@@ -149,11 +158,11 @@
   var ctx = cv.getContext("2d");
   var stage = document.getElementById("stage");
 
-  // High-DPI backing store: map logical 800x600 to device pixels for crispness.
+  // High-DPI backing store, sized by resize() below: the canvas fills the
+  // stage and the SIM BOX mirrors the stage's aspect, so nothing is ever
+  // letterboxed or stretched on any screen shape.
   var dpr = Math.min(2, window.devicePixelRatio || 1);
-  cv.width = W * dpr; cv.height = H * dpr;
   cv.style.width = "100%"; cv.style.height = "100%";
-  // object-fit: contain keeps the 4:3 box centred without stretching the fluid.
   ctx.imageSmoothingEnabled = true;
 
   var sim = new SPHSim({ width: W, height: H });
@@ -290,6 +299,29 @@
   body.width = cv.width; body.height = cv.height;
   var bctx = body.getContext("2d");
   var THRESH_K = 4;              // alpha hardening iterations (edge steepness)
+
+  // ------------------------------------------------------- viewport tracking
+  // The world box mirrors the viewport's SHAPE: W stays 800 logical units,
+  // H follows the aspect ratio. That makes every downstream transform a
+  // single uniform scale — particles and brush are round, brush lands under
+  // the finger, and there is no letterbox on any screen. Absurd aspects are
+  // clamped (a 40:1 monitor stretches a little rather than breaks).
+  function resize() {
+    var cw = stage.clientWidth, ch = stage.clientHeight;
+    if (!cw || !ch) return;
+    cv.width = Math.max(1, Math.round(cw * dpr));
+    cv.height = Math.max(1, Math.round(ch * dpr));
+    H = Math.max(360, Math.min(3200, Math.round(W * ch / cw)));
+    sim.resizeBox(W, H);
+    var mh2 = Math.max(1, Math.round(H * MS));
+    if (mh !== mh2) { mh = mh2; field.height = mh; field2.height = mh; }
+    up.width = cv.width; up.height = cv.height;
+    body.width = cv.width; body.height = cv.height;
+  }
+  var rT = 0;
+  window.addEventListener("resize", function () { clearTimeout(rT); rT = setTimeout(resize, 120); });
+  window.addEventListener("orientationchange", function () { setTimeout(resize, 300); });
+
   // A soft radial sprite stamped per particle to build a density field.
   // Its radius tracks particle size (SR ~ 3.8 x spacing) so merged blobs
   // stay equally gooey at any resolution.
@@ -363,15 +395,14 @@
 
   // --------------------------------------------------------------- drawing
   function render() {
-    // Letterbox transform: centre the logical 800x600 box in the canvas.
+    // The sim box mirrors the viewport aspect (resize()), so logical units
+    // map to device pixels through ONE uniform scale — no letterbox, no
+    // stretch, no offset.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#0b0f14";
     ctx.fillRect(0, 0, cv.width, cv.height);
-    var scale = Math.min(cv.width / W, cv.height / H);
-    var ox = (cv.width - W * scale) / 2, oy = (cv.height - H * scale) / 2;
-    ctx.setTransform(scale * dpr / dpr, 0, 0, scale * dpr / dpr, ox, oy);
-    // Simpler: work in logical units after applying scale + offset.
-    ctx.setTransform(scale, 0, 0, scale, ox, oy);
+    var scale = cv.width / W;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.fillStyle = "#0e141b";
     ctx.fillRect(0, 0, W, H);
 
@@ -438,13 +469,12 @@
     f2ctx.filter = "blur(1.1px)";
     f2ctx.drawImage(field, 0, 0);
     f2ctx.filter = "none";
-    // 3. bilinear upscale into the letterbox rect at device resolution
-    var ox = (cv.width - W * scale) / 2, oy = (cv.height - H * scale) / 2;
+    // 3. bilinear upscale to the full device-res canvas (box == canvas shape)
     uctx.setTransform(1, 0, 0, 1, 0, 0);
     uctx.clearRect(0, 0, up.width, up.height);
     uctx.imageSmoothingEnabled = true;
     uctx.imageSmoothingQuality = "high";
-    uctx.drawImage(field2, 0, 0, mw, mh, ox, oy, W * scale, H * scale);
+    uctx.drawImage(field2, 0, 0, mw, mh, 0, 0, up.width, up.height);
     // 4. threshold: alpha' = 1-(1-a)^K by compositing the upscale K times
     bctx.setTransform(1, 0, 0, 1, 0, 0);
     bctx.clearRect(0, 0, body.width, body.height);
@@ -458,10 +488,25 @@
     drawPointer();
   }
 
+  // Brush ring: optional (show brush checkbox) and user-colourable.
+  var uiBrush = document.getElementById("ui-brush");
+  var uiBrushCol = document.getElementById("ui-brushcol");
+  var brushOn = true, brushCol = "#4db4ff";
+  function hexA(hex, a) {
+    var n = parseInt(hex.slice(1), 16);
+    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+  }
+  uiBrush.addEventListener("change", function () {
+    brushOn = uiBrush.checked; saveOpt("brushOn", brushOn ? 1 : 0);
+  });
+  uiBrushCol.addEventListener("input", function () {
+    brushCol = uiBrushCol.value; saveOpt("brushCol", brushCol);
+  });
+
   function drawPointer() {
     var pt = sim.pointer;
-    if (!pt.active) return;
-    ctx.strokeStyle = pt.mode > 0 ? "rgba(120,220,120,0.9)" : "rgba(255,120,120,0.9)";
+    if (!pt.active || !brushOn) return;
+    ctx.strokeStyle = hexA(brushCol, 0.9);
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, sim.pointerRadius, 0, 6.2832);
@@ -477,8 +522,11 @@
   // free: upright -> down, tipped -> flows sideways, flat on a table ->
   // zero-g, screen facing down -> zero-g, screen-down-upside -> gravity up.
   var uiTilt = document.getElementById("ui-tilt");
+  var uiGain = document.getElementById("ui-gain");
+  var valGain = document.getElementById("val-gain");
   var motionSupported = (typeof DeviceMotionEvent !== "undefined") && ("ondevicemotion" in window);
   var tilting = false, gSaved = null;
+  var tiltGain = 1.5;            // sensitivity slider, persisted as `gain`
   if (!motionSupported) { uiTilt.textContent = "n/a"; uiTilt.classList.add("na"); }
   function onMotion(e) {
     var a = e.accelerationIncludingGravity || e.acceleration;
@@ -487,8 +535,12 @@
     var m = Math.sqrt(gx * gx + gy * gy);
     var DEAD = 0.25;                            // m/s^2 noise floor
     if (m <= DEAD) { sim.gx = 0; sim.gy = 0; return; }
-    var k = sim.gravity * ((m - DEAD) / m) / 9.81;
-    sim.gx = gx * k; sim.gy = gy * k;
+    var k = sim.gravity * tiltGain * ((m - DEAD) / m) / 9.81;
+    var gxs = gx * k, gys = gy * k;
+    var cap = sim.gravity * 1.6;                // rest gravity never exceeds
+    var vm = Math.sqrt(gxs * gxs + gys * gys);  // 1.6x normal, however sensitive
+    if (vm > cap) { gxs *= cap / vm; gys *= cap / vm; }
+    sim.gx = gxs; sim.gy = gys;
   }
   function setTilt(on) {
     if (on && !tilting) {
@@ -514,6 +566,11 @@
     }
   }
   uiTilt.addEventListener("click", function () { setTilt(!tilting); });
+  uiGain.addEventListener("input", function () {
+    tiltGain = +uiGain.value;
+    valGain.textContent = tiltGain.toFixed(1);
+    saveOpt("gain", tiltGain);
+  });
 
   // --------------------------------------------------------------- HUD
   var elFps = document.getElementById("hud-fps");
@@ -560,10 +617,10 @@
   // ----------------------------------------------------------- interaction
   // Convert a pointer event to logical 800x600 coordinates.
   function toLogical(ev) {
+    // Sim box mirrors the viewport, so this is a plain proportional map.
     var rect = cv.getBoundingClientRect();
-    var scale = Math.min(rect.width / W, rect.height / H);
-    var ox = (rect.width - W * scale) / 2, oy = (rect.height - H * scale) / 2;
-    return { x: (ev.clientX - rect.left - ox) / scale, y: (ev.clientY - rect.top - oy) / scale };
+    return { x: (ev.clientX - rect.left) * W / rect.width,
+             y: (ev.clientY - rect.top) * H / rect.height };
   }
   cv.addEventListener("contextmenu", function (e) { e.preventDefault(); });
   // ---------------------------------------------------------------- pointers
@@ -708,8 +765,15 @@
     touchMode = opts.touch; uiT.textContent = touchLabel();
   }
   if (+opts.tension) setTension(true);
+  if (isFinite(+opts.gain) && +opts.gain >= 0.5 && +opts.gain <= 4) {
+    tiltGain = +opts.gain; uiGain.value = tiltGain; valGain.textContent = tiltGain.toFixed(1);
+  }
+  if (opts.brushOn === 0) { brushOn = false; uiBrush.checked = false; }
+  if (/^#[0-9a-fA-F]{6}$/.test(opts.brushCol || "")) { brushCol = opts.brushCol; uiBrushCol.value = brushCol; }
   uiHide.checked = opts.hideui === undefined ? true : !!opts.hideui;
+  resize();                                          // box first: shape follows the viewport
   applySize(isFinite(+opts.size) ? +opts.size : 9, false);   // scales count to volume
+  sim.reset();                                       // re-dam once into the real box
   applyFsUI();                                               // labels + F11-already-on sync
   applyPalette(opts.palette);
   var uiDef = document.getElementById("ui-def");

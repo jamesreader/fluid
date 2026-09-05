@@ -308,6 +308,29 @@
   };
 
   // ---------------------------------------------------------------------------
+  // Resize the world box (the UI calls this when the viewport aspect changes)
+  // WITHOUT reseeding: particles keep their state, positions get clamped into
+  // the new box, and wall forces sort out the rest within a few frames. Cell
+  // size (== h) is untouched, so kernels/CFL are unaffected.
+  // ---------------------------------------------------------------------------
+  Sim.prototype.resizeBox = function (w, h) {
+    if (w === this.width && h === this.height) return this;
+    this.width = w; this.height = h;
+    this.cols = Math.max(1, Math.ceil(w / this.cell));
+    this.rows = Math.max(1, Math.ceil(h / this.cell));
+    this.gridHead = new Int32Array(this.cols * this.rows);
+    var m = this.boundMargin;
+    for (var i = 0; i < this.N; i++) {
+      if (this.px[i] > w - m) this.px[i] = w - m;
+      if (this.py[i] > h - m) this.py[i] = h - m;
+      if (this.px[i] < m) this.px[i] = m;
+      if (this.py[i] < m) this.py[i] = m;
+    }
+    this._nbOff = null; this._nbList = null;
+    return this;
+  };
+
+  // ---------------------------------------------------------------------------
   // Change the particle count mid-run (the UI slider calls this).
   //
   // Growing: new particles rain in as a jittered lattice laid along the TOP of
