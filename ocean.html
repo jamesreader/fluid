@@ -15,6 +15,8 @@
     --bg: #0b0f14; --bar: #10161d; --line: #1e2a35; --chip: #16202b; --chip-line: #24333f;
     --well: #1c2733; --well-line: #2c3d4b; --fg: #cfd8e3; --muted: #8fa3b5; --faint: #6d7f8f;
     --accent: #7fd1ff; --on-accent: #0b0f14; --panel: rgba(13, 19, 26, 0.93); --good: #7fe08a; --bad: #ff9d6b;
+    --track: #24303e; --switch-on: #1d5e8a; --switch-on-line: #2f7fb8; --btn-fg: #9fd1ff;
+    --tip: rgba(11, 15, 20, 0.72);
     color-scheme: dark;
   }
   [hidden] { display: none !important; }
@@ -46,7 +48,7 @@
          padding: 24px; text-align: center; color: var(--muted); background: var(--bg); }
   #msg p { max-width: 34em; }
   #look-tip { position: absolute; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px));
-              transform: translateX(-50%); background: rgba(11, 15, 20, 0.72); color: var(--fg);
+              transform: translateX(-50%); background: var(--tip); color: var(--fg);
               border: 1px solid var(--chip-line); border-radius: 6px; padding: 6px 12px;
               font-size: 13px; pointer-events: none; transition: opacity .4s; }
   /* ------------------------------------------------------- options panel */
@@ -66,17 +68,17 @@
   .prow input[type="checkbox"] {
     appearance: none; -webkit-appearance: none; flex: none; cursor: pointer; margin: 0;
     width: 40px; height: 23px; border-radius: 12px; position: relative;
-    background: #24303e; border: 1px solid var(--well-line); transition: background .15s, border-color .15s;
+    background: var(--track); border: 1px solid var(--well-line); transition: background .15s, border-color .15s;
   }
   .prow input[type="checkbox"]::after {
     content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px;
     border-radius: 50%; background: var(--muted); transition: left .15s, background .15s;
   }
-  .prow input[type="checkbox"]:checked { background: #1d5e8a; border-color: #2f7fb8; }
+  .prow input[type="checkbox"]:checked { background: var(--switch-on); border-color: var(--switch-on-line); }
   .prow input[type="checkbox"]:checked::after { left: 19px; background: var(--accent); }
-  .prow button { background: var(--well); color: #9fd1ff; border: 1px solid var(--well-line);
+  .prow button { background: var(--well); color: var(--btn-fg); border: 1px solid var(--well-line);
                  border-radius: 4px; padding: 2px 9px; font: inherit; cursor: pointer; }
-  .prow button:hover { background: #24303e; }
+  .prow button:hover { background: var(--track); }
   .prow select { background: var(--well); color: var(--fg); border: 1px solid var(--well-line);
                  border-radius: 4px; padding: 2px 5px; font: inherit; }
   #panel a { color: var(--accent); }
