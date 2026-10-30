@@ -121,6 +121,7 @@
     </div>
     <div class="chip" id="hud-tool"><span>throw</span> <span id="hud-item">beach ball</span></div>
     <button class="tbtn" id="ui-opts" title="options (H) — waves, water, sky, render">⚙</button>
+    <button class="tbtn" id="ui-snd" title="sound on/off (M)">sound</button>
     <button class="tbtn" id="ui-fs" title="full screen (F)">⛶</button>
     <div id="hint"></div>
   </div>
@@ -135,6 +136,7 @@
 <script src="world.js?v=@@VER@@"></script>
 <script src="life.js?v=@@VER@@"></script>
 <script src="play.js?v=@@VER@@"></script>
+<script src="sound.js?v=@@VER@@"></script>
 <script src="ocean.js?v=@@VER@@"></script>
 <script>
 "use strict";
@@ -211,6 +213,7 @@ function lagoonMain() {
     keys[e.code] = true;
     if (k >= "1" && k <= "4") { setTool(["fly", "touch", "throw", "boat"][+k - 1]); return; }
     if (k === "x") { throwKind = (throwKind + 1) % Play.KINDS.length; syncTool(); return; }
+    if (k === "m") { toggleSound(); return; }
     if (k === "h" || k === "o") { togglePanel(); e.preventDefault(); }
     else if (k === "p") { setPaused(!paused); }
     else if (k === "f") { toggleFullscreen(); }
@@ -399,6 +402,45 @@ function lagoonMain() {
     play.throwObject(throwKind, o, [d[0] * speed, d[1] * speed + 2.5, d[2] * speed]);
     hideTip();
   }
+  // ------------------------------------------------------------- sound
+  var snd = new Sound.Soundscape(), sndBtn = document.getElementById("ui-snd"), sndTimer = 0, sndState = { surf: 0, crash: 0, wind: 0, under: false, engine: null };
+  function toggleSound() {
+    if (snd.on) snd.stop(); else snd.start();
+    sndBtn.classList.toggle("on", snd.on);
+    var o = loadOpts(); o.sound = snd.on; saveOpts(o);
+  }
+  sndBtn.addEventListener("click", toggleSound);
+  // remembered "on": starts with the first click or key (browsers need a gesture)
+  if (saved.sound) {
+    var wake = function () { if (!snd.on) { snd.start(); sndBtn.classList.add("on"); } window.removeEventListener("pointerdown", wake, true); window.removeEventListener("keydown", wake, true); };
+    window.addEventListener("pointerdown", wake, true); window.addEventListener("keydown", wake, true);
+  }
+  // How loud the surf is here: breaking water near the camera, and how much
+  // of it is crashing right now (lips at phase ~0).
+  function listen() {
+    var w = world, c = cam.pos, T = w.SWELL_T, om = 2 * Math.PI / T, og = om / w.GROUP, t = renderer.time;
+    var roar = 0, crash = 0, h = Math.max(c[1], 0);
+    for (var i = 0; i < 220; i++) {
+      var a = Math.random() * 2 * Math.PI, r = 4 + 150 * Math.random() * Math.random();
+      var x = c[0] + Math.cos(a) * r, z = c[2] + Math.sin(a) * r;
+      var st = w.bilinear(w.stage, x, z, 0);
+      if (st < 0.9) continue;
+      var A = w.bilinear(w.arrival, x, z, 0), th = ((om * (t - A)) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+      var H = w.bilinear(w.waveH, x, z, 0) * params.surf * (0.72 + 0.28 * Math.cos(og * (t - A)));
+      var d = Math.hypot(r, h), wgt = H * 40 / (40 + d * d / 30) * r / 60;
+      roar += wgt * (st > 1.05 ? 1 : 0.3);
+      if (st < 1.45 && th > -0.05 && th < 0.35) crash += wgt * 2;
+    }
+    sndState.surf = Math.min(1, roar / 18);
+    sndState.crash = Math.min(1, crash / 8);
+    sndState.wind = Math.min(1, params.wind / 14 + h / 300);
+    var probe = renderer.probeResults();
+    sndState.under = probe ? c[1] < probe[0] : c[1] < 0;
+    var b = play.boat;
+    sndState.engine = b ? { throttle: b.throttle, speed: Math.hypot(b.vel[0], b.vel[2]), dist: Math.hypot(b.pos[0] - c[0], b.pos[1] - c[1], b.pos[2] - c[2]) } : null;
+    snd.update(sndState);
+  }
+
   // Boat controls and the chase camera that follows it.
   function driveBoat(dt) {
     var b = play.boat;
@@ -458,7 +500,7 @@ function lagoonMain() {
     ["exposure", "exposure", 0.1, 2, 0.01, "", 2, ""],
     ["renderScale", "resolution", 0.35, 1, 0.05, "×", 2, "fraction of screen pixels rendered; lower is faster"],
   ];
-  var widgets = {};
+  var widgets = {}, shoreTimer = 0;
   function fmt(c, v) { return (+v).toFixed(c[6]) + c[5]; }
   function row(html) { var d = document.createElement("div"); d.className = "prow"; d.innerHTML = html; panel.appendChild(d); return d; }
   CONTROLS.forEach(function (c) {
@@ -472,6 +514,8 @@ function lagoonMain() {
       var o = {}; o[c[0]] = +inp.value;
       renderer.setParams(o); params[c[0]] = +inp.value;
       out.textContent = fmt(c, inp.value); store();
+      // the shore waves are solved on the CPU (~0.5 s): wait for the slider to settle
+      if (c[0] === "surf" || c[0] === "windDir") { clearTimeout(shoreTimer); shoreTimer = setTimeout(function () { renderer.rebuildShore(); }, 350); }
     });
     widgets[c[0]] = { inp: inp, out: out, c: c };
   });
@@ -518,7 +562,7 @@ function lagoonMain() {
   function store() {
     var o = {};
     Object.keys(params).forEach(function (k) { if (params[k] !== defaults[k]) o[k] = params[k]; });
-    o.camSpeed = cam.speed; o.fov = Math.round(cam.fov * 180 / Math.PI); o.cruise = cruise;
+    o.camSpeed = cam.speed; o.fov = Math.round(cam.fov * 180 / Math.PI); o.cruise = cruise; o.sound = !!(snd && snd.on);
     saveOpts(o);
   }
   syncUI();
@@ -577,6 +621,10 @@ function lagoonMain() {
     play.update(sdt, renderer.time, cam.pos, params.surf);
     renderer.setProbePoints(play.probePoints());
     renderer.addDrops(play.takeDrops());
+    if (snd.on) {
+      play.events.forEach(function (ev) { snd.splash(Math.hypot(ev.x - cam.pos[0], ev.z - cam.pos[2]), ev.size); });
+      if ((sndTimer += dt) > 0.1) { sndTimer = 0; listen(); }
+    }
     play.events.length = 0;
     renderer.render(paused ? 0 : dt, { pos: cam.pos, fwd: fwd(), fov: cam.fov });
     if (dt > 0) fpsEMA += (1 / dt - fpsEMA) * 0.05;

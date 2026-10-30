@@ -2,13 +2,13 @@
  * falling back to cache when offline.
  *
  * VERSION DISCIPLINE: bump CACHE below on every deploy that changes
- * index.html, sim.js or any ocean*.js / world.js / life.js / play.js. The name change is what forces
+ * index.html, sim.js or any of ocean / world / life / play / sound .js. The name change is what forces
  * every installed copy to evict its stale shell on next visit — the
  * byte-change in THIS file is also what makes browsers re-check at all (they
  * don't re-fetch an unchanged sw.js). Forgetting the bump strands old installs
  * on old physics mixed with fresh HTML, which reads as "UI fine, simulation
  * dead". */
-var CACHE = "sphfluid-v6";
+var CACHE = "sphfluid-v7";
 var ASSETS = [
   "./",
   "./index.html",
@@ -18,6 +18,7 @@ var ASSETS = [
   "./world.js",
   "./life.js",
   "./play.js",
+  "./sound.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png"
