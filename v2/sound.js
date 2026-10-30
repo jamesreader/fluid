@@ -7,6 +7,7 @@
  *   engine two detuned oscillators through a low-pass, pitched by the
  *          boat's throttle and speed, fading with distance
  *   splash one-shot noise bursts for things hitting the water
+ *   night  a chorus of crickets from the island, after dark
  *
  * Under water everything goes through a closing low-pass and a muffled hum.
  * Browsers only allow audio after a user gesture, so start() is called from
@@ -17,6 +18,7 @@
   else global.Sound = factory();
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
+  var TAU = 2 * Math.PI;
 
   function Soundscape() { this.ctx = null; this.on = false; this.lastCrash = 0; }
 
@@ -54,6 +56,28 @@
     this.osc1.connect(this.engF); this.osc2.connect(o2g); o2g.connect(this.engF);
     this.engF.connect(this.engG); this.engG.connect(this.master);
     this.osc1.start(); this.osc2.start();
+    // crickets: a few singers, each a ~4.5 kHz tone gated into trills of
+    // three pulses, repeating at its own rate; baked into a 6 s loop
+    var cl = ctx.sampleRate * 6, cb = ctx.createBuffer(2, cl, ctx.sampleRate), sr = ctx.sampleRate;
+    var singers = [[4420, 0.61, 0.0, 0.9, 0.3], [4710, 0.83, 0.21, 0.6, 0.75], [4180, 0.72, 0.47, 0.45, 0.5], [5030, 1.1, 0.13, 0.3, 0.15], [4560, 0.52, 0.36, 0.35, 0.9]];
+    for (var ch = 0; ch < 2; ch++) {
+      var cd = cb.getChannelData(ch);
+      for (i = 0; i < cl; i++) {
+        var tt = i / sr, v = 0;
+        for (var q = 0; q < singers.length; q++) {
+          var sg = singers[q], ph = (tt / sg[1] + sg[2]) % 1, tp = ph * sg[1];   // time into this singer's chirp
+          if (tp < 0.105) {
+            var pp = tp % 0.035, env = pp < 0.02 ? Math.sin(Math.PI * pp / 0.02) : 0;
+            var pan = ch === 0 ? 1 - sg[4] : sg[4];
+            v += env * Math.sin(TAU * sg[0] * tt) * sg[3] * (0.4 + 0.6 * pan);
+          }
+        }
+        cd[i] = v * 0.22;
+      }
+    }
+    this.nightG = gain(0);
+    var cs = ctx.createBufferSource(); cs.buffer = cb; cs.loop = true; cs.start(0);
+    cs.connect(this.nightG); this.nightG.connect(this.master);
     // underwater hum
     this.humG = gain(0); var hf = filter("lowpass", 160, 0.8);
     loop(brown).connect(hf); hf.connect(this.humG); this.humG.connect(this.under);
@@ -68,7 +92,8 @@
     this.humG.gain.setTargetAtTime(0, this.ctx.currentTime, 0.2);
   };
 
-  // s: { surf 0..1, crash 0..1, wind 0..1, under bool, engine: {throttle, speed, dist} | null }
+  // s: { surf 0..1, crash 0..1, wind 0..1, under bool, engine: {throttle, speed, dist} | null,
+  //      night 0..1, land 0..1 (how near the island's shore) }
   Soundscape.prototype.update = function (s) {
     if (!this.ctx || !this.on) return;
     var t = this.ctx.currentTime, k = 0.15;
@@ -86,6 +111,8 @@
     } else this.engG.gain.setTargetAtTime(0, t, 0.3);
     this.under.frequency.setTargetAtTime(s.under ? 420 : 18000, t, 0.08);
     this.humG.gain.setTargetAtTime(s.under ? 0.25 : 0, t, 0.2);
+    var nk = Math.max(0, Math.min(1, ((s.night || 0) - 0.4) / 0.5));
+    this.nightG.gain.setTargetAtTime(s.under ? 0 : 0.16 * nk * nk * (0.15 + 0.85 * (s.land || 0)), t, 0.8);
   };
   Soundscape.prototype.splash = function (dist, size) {
     if (!this.ctx || !this.on) return;

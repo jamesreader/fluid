@@ -54,6 +54,8 @@
     swell: 0,          // optional extra long swell in the open-ocean FFT (m)
     surfSim: true,     // simulate the surf zone around the camera (shallow water + lips)
     lips: 0.25,        // how readily breaking fronts throw lips (0 = none)
+    night: 0,          // 0 day .. 1 moonlit night (the sun sliders then place the moon)
+    glow: 0.8,         // bioluminescent plankton: lights up where the water is stirred, at night
     depth: 4.5,        // water depth the FFT spectrum is built for
     clarity: 1,        // >1 clearer, <1 murkier
     caustics: 1,
@@ -343,6 +345,8 @@
     "uniform vec3 uSunDir;",       // unit vector toward the sun
     "uniform vec3 uSunCol;",       // sun irradiance at sea level
     "uniform float uTime;",
+    "uniform vec3 uGlowCol;",      // plankton light per unit of stirring (0 by day)
+    "uniform float uNight;",       // 0 day .. 1 moonlit night
     "float sat(float x) { return clamp(x, 0.0, 1.0); }",
   ].join("\n");
 
@@ -719,10 +723,10 @@
     "void main() {",
     "  ivec2 p = ivec2(gl_FragCoord.xy), q = p + uShift, n = textureSize(uRipPrev, 0);",
     "  vec4 c = at(q);",
-    "  float h = c.r, v = c.g, foam = c.b;",
+    "  float h = c.r, v = c.g, foam = c.b, glow = c.a;",
     "  vec2 pos = uRipC + (vec2(p) + 0.5 - 0.5 * vec2(n)) * uCell;",
     "  float depth = -worldAt(pos, 0.0).x;",
-    "  if (depth < 0.06) { o = vec4(0.0, 0.0, foam * 0.97, 1.0); return; }",   // the shore reflects
+    "  if (depth < 0.06) { o = vec4(0.0, 0.0, foam * 0.97, glow * 0.9); return; }",   // the shore reflects
     "  float cc = min(uCmax, sqrt(9.81 * depth));",
     "  float lap = (at(q + ivec2(1, 0)).r + at(q - ivec2(1, 0)).r + at(q + ivec2(0, 1)).r + at(q - ivec2(0, 1)).r - 4.0 * h) / (uCell * uCell);",
     "  v += cc * cc * lap * uDt;",
@@ -730,7 +734,7 @@
     "    if (i >= uNDrops) break;",
     "    vec4 d = uDrops[i];",
     "    float w = exp(-dot(pos - d.xy, pos - d.xy) / (d.z * d.z));",
-    "    v += d.w * w; foam += uDropFoam[i] * w;",
+    "    v += d.w * w; foam += uDropFoam[i] * w; glow += (abs(d.w) * 0.3 + uDropFoam[i] * 1.5) * w;",
     "  }",
     // absorbing border, gentle loss everywhere
     "  vec2 e = min(vec2(p), vec2(n) - 1.0 - vec2(p)) / float(n.x);",
@@ -741,7 +745,9 @@
     // steep, fast ripples whiten
     "  foam += max(abs(v) - 0.6, 0.0) * uDt * 3.0;",
     "  foam = min(foam * exp(-uDt * 0.4), 2.5);",
-    "  o = vec4(h, v, foam, 1.0);",
+    // plankton flash when the water moves past them and fade within a second or two
+    "  glow = min((glow + abs(v) * 3.0 * uDt) * exp(-uDt * 1.3), 3.0);",
+    "  o = vec4(h, v, foam, glow);",
     "}",
   ].join("\n");
 
@@ -1045,18 +1051,48 @@
     "uniform sampler2D uProbe;",
     "uniform mat4 uInvViewProj;",
     "uniform vec3 uSunDisk;",       // sun disk radiance
+    "float hash13(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }",
+    // A star in about one cell in 70 of a fine grid over the sky, a pixel or
+    // so wide, twinkling; the Milky Way as a band of faint mottled light.
+    "vec3 starField(vec3 d, float px) {",
+    "  vec3 p = d * 260.0, c = floor(p);",
+    "  float h = hash13(c);",
+    "  vec3 s = vec3(0.0);",
+    "  if (h > 0.986) {",
+    "    vec3 sp = c + 0.5 + 0.5 * (vec3(hash13(c + 7.1), hash13(c + 3.7), hash13(c + 1.3)) - 0.5);",
+    "    vec3 e = p - sp; e -= d * dot(e, d);",
+    "    float b = 0.05 + 2.5 * pow(fract(h * 43.7), 5.0);",
+    "    float tw = 0.65 + 0.35 * sin(uTime * (2.0 + 6.0 * fract(h * 13.1)) + h * 80.0);",
+    "    vec3 tint = mix(vec3(1.0, 0.8, 0.62), vec3(0.72, 0.84, 1.0), fract(h * 7.3));",
+    "    s = tint * b * tw * exp(-dot(e, e) / (px * px)) * 0.12;",
+    "  }",
+    "  vec3 mw = normalize(vec3(0.35, 0.5, -0.79));",
+    "  vec2 q = d.xz / (1.0 + d.y) * 7.0;",
+    "  float band = exp(-pow(dot(d, mw) / 0.2, 2.0)) * (0.35 + 0.65 * smoothstep(0.3, 0.8, vnoise(q) * 0.6 + vnoise(q * 2.7) * 0.4));",
+    "  s += vec3(0.72, 0.78, 1.0) * band * 0.004;",
+    "  return s * smoothstep(0.0, 0.2, d.y);",
+    "}",
     "in vec2 vUv;",
     "out vec4 o;",
     "void main() {",
     "  vec4 q = uInvViewProj * vec4(vUv * 2.0 - 1.0, 1.0, 1.0);",
     "  vec3 rd = normalize(q.xyz / q.w - uCam);",
+    "  float starPx = max(length(fwidth(rd)) * 260.0 * 0.6, 0.05);",   // a star stays about a pixel wide
     "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
     "  vec3 col;",
     "  if (!under) {",
     "    if (rd.y >= 0.0) {",
     "      col = atmosphere(rd);",
     "      float mu = dot(rd, uSunDir);",
-    "      col += uSunDisk * smoothstep(0.999956, 0.999976, mu);",
+    "      float disk = smoothstep(0.999956, 0.999976, mu);",
+    "      if (uNight > 0.0) {",                       // the moon: grey maria on a pale disk
+    "        vec3 t1 = normalize(cross(uSunDir, vec3(0.0, 1.0, 0.0)) + 1e-5), t2 = cross(t1, uSunDir);",
+    "        vec2 mq = vec2(dot(rd, t1), dot(rd, t2)) / 0.0082;",
+    "        float mare = smoothstep(0.45, 0.7, vnoise(mq * 1.7 + 3.0) * 0.65 + vnoise(mq * 4.3) * 0.35);",
+    "        disk *= mix(1.0, (1.0 - 0.45 * mare) * (0.8 + 0.2 * sqrt(sat(1.0 - dot(mq, mq)))), uNight);",
+    "        col += starField(rd, starPx) * smoothstep(0.55, 1.0, uNight);",
+    "      }",
+    "      col += uSunDisk * disk;",
     "      vec4 c = clouds(uCam, rd);",
     "      col = col * (1.0 - c.a) + c.rgb;",
     "    } else {",
@@ -1137,7 +1173,8 @@
     "  }",
     // surface normal from both tangent vectors (handles the folded lip too)
     "  vec2 rs = rippleSlope(vXZ);",
-    "  float ripFoam = ripple(vXZ).b;",
+    "  vec4 rp = ripple(vXZ);",
+    "  float ripFoam = rp.b;",
     "  vec3 Tx = vec3(1.0 + g.z + sw.jac.x, g.x + sw.slope.x + rs.x, sw.jac.w);",
     "  vec3 Tz = vec3(sw.jac.z, g.y + sw.slope.y + rs.y, 1.0 + g.w + sw.jac.y);",
     "  vec3 N = normalize(cross(Tz, Tx));",
@@ -1199,7 +1236,15 @@
     "    surf = max(surf, sat(ripFoam * 1.4 - 0.35 + (lace - 0.5) * 2.2) * sat(ripFoam * 4.0));",   // wakes and splashes: lacy, solid only where churned
     "    float m = max(smoothstep(0.25, 0.95, foam * (0.5 + 0.9 * vnoise((vXZ + uOffD) * 2.0)) * uFoamStr), sat(surf));",
     "    vec3 foamCol = 0.85 * (uSunCol * max(dot(N, uSunDir), 0.0) * shadow + skyIrradiance()) / PI;",
-    "    col = mix(col, foamCol, m);",
+    "    col = mix(col, foamCol, m * (1.0 - 0.45 * uNight));",
+    // at night the plankton light up wherever the water is stirred: breaking
+    // surf and whitewater, wakes, splashes, ripples spreading from anything moving
+    "    if (uGlowCol.b > 0.0) {",
+    "      vec2 gq = (vXZ + uOffD) * 5.0;",
+    "      float spark = 0.35 + 0.9 * smoothstep(0.45, 0.95, vnoise(gq + vec2(uTime * 1.3, 0.0)) * 0.6 + vnoise(gq * 2.3 - vec2(0.0, uTime * 1.7)) * 0.4);",
+    "      float stir = rp.a * 0.9 + surf * 1.4 + m * 0.5 + sat(ripFoam) * 0.8 + sat(sweFoam) * 0.6;",
+    "      col += uGlowCol * stir * spark;",
+    "    }",
     "  } else {",
     // seen from below: Snell's window to the sky, total internal reflection outside it
     "    vec3 Nw = -normalize(mix(N, vec3(0.0, 1.0, 0.0), 0.7 * sat(dist / 30.0)));",
@@ -1216,6 +1261,7 @@
     "    }",
     "    col = mix(above, below, F);",
     "    col = mix(col, foam * vec3(0.7) * skyIrradiance() / PI, sat(foam * uFoamStr * 0.6));",
+    "    if (uGlowCol.b > 0.0) col += uGlowCol * (rp.a * 0.9 + sat(sw.foam * 1.6) + sat(ripFoam) * 0.8 + sat(foam * 0.5)) * (0.5 + 0.7 * vnoise((vXZ + uOffD) * 5.0 + uTime));",
     "    col = throughWater(col, dist, zFog);",
     "  }",
     "  if (any(isnan(col))) col = vec3(0.0);",
@@ -1546,6 +1592,8 @@
     "  float shadow = terrainShadow(P, 0.0) * sunVis(P + n * 0.05, 0.002);",
     "  vec3 col = lightGround(P, n, alb, z, dist, shadow);",
     "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
+    // at night, swimmers wear a halo of the plankton they disturb
+    "  if (k >= 10 && k <= 12 && uGlowCol.b > 0.0) col += uGlowCol * (0.2 + 1.5 * pow(1.0 - abs(dot(n, toEye)) / dist, 3.0)) * (0.5 + 0.7 * vnoise(vLocal.xz * 9.0 + uTime * 3.0));",
     "  if (under) col = throughWater(col, dist, 0.5 * (max(-uCam.y, 0.0) + z));",
     "  if (any(isnan(col))) col = vec3(0.0);",
     // alpha carries the distance so the water can look through its surface at us
@@ -1586,7 +1634,7 @@
     "  vec3 along = vl > 1e-3 ? vs / vl : uCamUp, across = normalize(cross(along, normalize(uCam - P)));",
     "  float stretch = 1.0 + min(vl * 0.08, 2.5);",
     "  P += across * q.x * aInst0.w + along * q.y * aInst0.w * stretch;",
-    "  vQ = q; vA = aInst1.w;",
+    "  vQ = q; vA = aInst1.w * smoothstep(0.4, 1.6, distance(uCam, P));",   // drops at the lens would fill the view
     "  gl_Position = uViewProj * vec4(P, 1.0);",
     "}",
   ].join("\n");
@@ -1599,7 +1647,7 @@
     "  float a = (1.0 - smoothstep(0.25, 1.0, d)) * vA * 0.7;",
     "  if (a < 0.004) discard;",
     "  vec3 sky = PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb;",
-    "  vec3 col = (uSunCol * 0.95 + sky) / PI * 0.9;",
+    "  vec3 col = (uSunCol * 0.95 + sky) / PI * 0.9 + uGlowCol * 2.0;",
     "  o = vec4(col * a, a);",
     "}",
   ].join("\n");
@@ -1653,7 +1701,9 @@
     "    vec2 cu = vec2(rnd(seed), rnd(seed));",
     "    ivec2 c = ivec2(cu * vec2(n));",
     "    vec4 ax = texelFetch(uSweAux, c, 0);",
-    "    if (ax.r * uLipRate <= rnd(seed)) continue;",
+    // every dead slot tries a few cells, so each cell gets ~1.5 tries a
+    // frame: accept in proportion to how hard it breaks and to the frame time
+    "    if (ax.r * uLipRate * 120.0 * uDt <= rnd(seed)) continue;",
     "    vec2 dir = normalize(ax.gb + 1e-5);",
     "    vec2 p0 = uSweC + (vec2(c) + vec2(rnd(seed), rnd(seed)) - 0.5 * vec2(n)) * cell;",
     // launch from the top of the face: walk back up the slope to the crest
@@ -1663,7 +1713,9 @@
     "      float hq = sweAt(q).r, e = worldAt(q, 0.0).x + hq;",
     "      if (e > top) { top = e; best = q; depth = hq; }",
     "    }",
-    "    float speed = sqrt(9.81 * max(depth, 0.3)) * (0.9 + 0.3 * rnd(seed));",
+    // a plunging crest outruns its wave (that's why it overturns): thrown
+    // ahead of the face, the lip falls past its toe and leaves the tube
+    "    float speed = sqrt(9.81 * max(depth, 0.3)) * (1.15 + 0.3 * rnd(seed));",
     "    oA = vec4(best.x, top + 0.02, best.y, 2.2);",
     "    oB = vec4(dir.x * speed, 0.3 + 0.9 * rnd(seed), dir.y * speed, 0.0);",
     "    return;",
@@ -1686,7 +1738,7 @@
     "  float r = uKind < 0.5 ? uRadius : 0.04 + 0.07 * fract(float(gl_VertexID) * 0.618034);",
     "  gl_Position = c;",
     "  gl_PointSize = clamp(2.0 * r * uPointScale / max(c.w, 0.05), 1.0, uMaxPoint);",
-    "  vR = r; vZ = c.w; vAge = uKind < 0.5 ? B.w : sat01(A.w * 2.0);",
+    "  vR = r; vZ = c.w; vAge = uKind < 0.5 ? B.w : sat01(A.w * 2.0) * smoothstep(0.4, 1.6, c.w);",
     "}",
   ].join("\n").replace("sat01(A.w * 2.0)", "clamp(A.w * 2.0, 0.0, 1.0)");
   // eye distance of the sphere's front surface (depth-tested by its centre)
@@ -1776,6 +1828,7 @@
     "  col += uSunCol * 0.6 * pow(max(dot(N, Hh), 0.0), 180.0) * F;",
     "  vec3 foam = 0.9 * (uSunCol * max(dot(N, uSunDir), 0.0) * 0.8 + skyIrradiance()) / PI;",
     "  col = mix(col, foam, sat(aer * 1.3));",
+    "  col += uGlowCol * (0.25 + 2.2 * aer) * (0.6 + 0.6 * vnoise(vUv * 90.0 + uTime * 2.0));",
     "  float a = smoothstep(0.0, 0.06, thick);",
     "  col = mix(base, col, a);",
     "  if (any(isnan(col))) col = base;",
@@ -1790,7 +1843,7 @@
     "  float a = (1.0 - smoothstep(0.2, 1.0, d)) * vAge * 0.75;",
     "  if (a < 0.004) discard;",
     "  vec3 sky = PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb;",
-    "  o = vec4((uSunCol * 0.95 + sky) / PI * 0.9 * a, a);",
+    "  o = vec4(((uSunCol * 0.95 + sky) / PI * 0.9 + uGlowCol * 2.5) * a, a);",
     "}",
   ].join("\n");
 
@@ -1829,14 +1882,18 @@
   ].join("\n");
   var FS_COMPOSITE = HEAD + [
     "uniform sampler2D uScene, uBloom;",
-    "uniform float uExposure, uBloomStr;",
+    "uniform float uExposure, uBloomStr, uNight;",
     "uniform vec3 uWhite;",
     "in vec2 vUv;",
     "out vec4 o;",
     "vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }",
     "void main() {",
     "  vec3 c = texture(uScene, vUv).rgb + texture(uBloom, vUv).rgb * uBloomStr;",
-    "  c = aces(c * uExposure * uWhite);",
+    "  c *= uExposure * uWhite;",
+    // moonlight: rods see little colour and lean blue; bright things keep theirs
+    "  float L = dot(c, vec3(0.15, 0.7, 0.15));",
+    "  c = mix(c, L * vec3(0.6, 0.8, 1.25), uNight * 0.45 * (1.0 - smoothstep(0.15, 1.2, L)));",
+    "  c = aces(c);",
     "  c = pow(c, vec3(1.0 / 2.2));",
     "  float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);",
     "  o = vec4(c + (n - 0.5) / 255.0, 1.0);",
@@ -1919,8 +1976,8 @@
     });
     return P;
   }
-  function lookDir(eye, fwd) {   // view matrix from eye + forward (y up)
-    var f = norm3(fwd), s = norm3(cross3(f, [0, 1, 0])), u = cross3(s, f);
+  function lookDir(eye, fwd, up) {   // view matrix from eye + forward (up: y unless given, e.g. rolling on a swell)
+    var f = norm3(fwd), s = norm3(cross3(f, up || [0, 1, 0])), u = cross3(s, f);
     return new Float32Array([s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0,
       -dot3(s, eye), -dot3(u, eye), dot3(f, eye), 1]);
   }
@@ -2340,7 +2397,9 @@
     var ctr = [c[0] * cell - O[0], c[1] * cell - O[1]];
     common.uSweC = ctr; common.uSweSize = N * cell; common.uSweOn = this.p.surfSim ? 1 : 0;
     if (!this.p.surfSim) { common.uSwe = this.sweS[this.sweCur]; common.uSweAux = this.sweA[this.sweAux]; return; }
-    var steps = Math.max(1, Math.min(4, Math.ceil(dt / 0.012))), h = dt / steps;
+    // gravity waves cross a cell in ~0.024 s in 30 m of water: never step
+    // longer than half that (on a slow frame the surf runs slow instead)
+    var steps = Math.max(1, Math.min(6, Math.ceil(dt / 0.012))), h = Math.min(dt / steps, 0.012);
     if (dt <= 0) { steps = shift[0] || shift[1] ? 1 : 0; h = 1e-4; }
     for (var s = 0; s < steps; s++) {
       var a = this.sweCur, b = 1 - a, au = this.sweAux, ab = 1 - au;
@@ -2375,9 +2434,9 @@
   // Draw the lips as a liquid surface over the scene, then the surf spray.
   Renderer.prototype._drawLips = function (common, vp, w, h, camera) {
     var gl = this.gl, NP = this.LIP_N * this.LIP_N, self = this;
-    var fw = norm3(camera.fwd), rt = norm3(cross3(fw, [0, 1, 0])), upc = cross3(rt, fw);
+    var fw = norm3(camera.fwd), rt = norm3(cross3(fw, camera.up || [0, 1, 0])), upc = cross3(rt, fw);
     var f = 1 / Math.tan(camera.fov / 2);
-    var pts = { uPA: this.lipA[this.lipCur], uPB: this.lipB[this.lipCur], uViewProj: vp, uRadius: 0.2, uMaxPoint: this.maxPoint };
+    var pts = { uPA: this.lipA[this.lipCur], uPB: this.lipB[this.lipCur], uViewProj: vp, uRadius: 0.28, uMaxPoint: this.maxPoint };
     gl.bindVertexArray(this.emptyVao);
     // 1. eye depth of the nearest lip surface
     this._target(this.lipZF, this.lipW, this.lipH);
@@ -2408,7 +2467,7 @@
     this.progLipComp.use().set(common).set({
       uLipZ: this.lipZ, uLipT: this.lipT, uSceneCopy: this.sceneCopy, uSceneDepth: this.sceneDepth,
       uTanHalf: [Math.tan(camera.fov / 2) * w / h, Math.tan(camera.fov / 2)], uCamRight: rt, uCamUp: upc, uCamFwd: fw,
-      uNear: 0.25, uFar: 30000,
+      uNear: camera.near || 0.25, uFar: 30000,
     });
     this._fullscreen();
     // 5. spray from the shattered lips
@@ -2724,17 +2783,26 @@
     var cam = [camera.pos[0] - O[0], camera.pos[1], camera.pos[2] - O[1]];
     // near plane at 25 cm keeps the depth buffer fine enough to separate
     // water from beach a kilometre away
-    var proj = perspective(camera.fov, w / h, 0.25, 30000);
-    var view = lookDir(cam, camera.fwd);
+    // (a camera floating at the waterline asks for a closer one: camera.near)
+    var near = camera.near || 0.25;
+    var proj = perspective(camera.fov, w / h, near, 30000);
+    var view = lookDir(cam, camera.fwd, camera.up);
     var vp = mul4(proj, view);
 
     // Sun, sky and water optics.
     var el = p.sunElev * Math.PI / 180, az = p.sunAzim * Math.PI / 180;
     var sun = [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)];
     var trans = sunTransmittance(sun);
-    var sunCol = trans.map(function (t) { return t * SUN_I; });
+    // At night the moon takes the sun's place, a few hundred times dimmer
+    // (really ~400000; the eye adapts the rest, see exposure below).
+    var night = Math.max(0, Math.min(1, p.night)), lightK = Math.pow(1 / 300, night);
+    // moonlight is shot day-for-night: a cool blue the eye reads as moonlit
+    var moonTint = [0.62, 0.8, 1.25].map(function (v) { return 1 + (v - 1) * night; });
+    var sunCol = trans.map(function (t, i) { return t * SUN_I * lightK * moonTint[i]; });
     // disk radiance = irradiance / solid angle, capped to keep bloom sane
-    var sunDisk = trans.map(function (t) { return Math.min(t * SUN_I / 6.8e-5, 4000); });
+    var sunDisk = trans.map(function (t) { return Math.min(t * SUN_I / 6.8e-5, 4000) * lightK; });
+    var gn = Math.max(0, Math.min(1, (night - 0.3) / 0.6)), glowK = p.glow * gn * gn * (3 - 2 * gn) * 0.3;
+    this.exposureNow = p.exposure * Math.pow(45, night);
     var sunRefr = refract3([-sun[0], -sun[1], -sun[2]], [0, 1, 0], 1 / 1.333);
     var sunTrans = 1 - fresnelJS(Math.max(sun[1], 0.01), 1 / 1.333);
     var clear = Math.max(0.15, p.clarity);
@@ -2751,6 +2819,7 @@
 
     var common = {
       uCam: cam, uSunDir: sun, uSunCol: sunCol, uTime: this.time,
+      uGlowCol: [0.03, 0.4, 1.0].map(function (v) { return v * glowK; }), uNight: night,
       uDisp0: this.casc[0].disp[this.cur], uDisp1: this.casc[1].disp[this.cur], uDisp2: this.casc[2].disp[this.cur],
       uDer0: this.casc[0].der, uDer1: this.casc[1].der, uDer2: this.casc[2].der,
       uCascL: CASCADE_L, uN: FFT_N,
@@ -2774,11 +2843,11 @@
     };
 
     // Sky LUT, only when the sun has moved.
-    var key = sun.map(function (v) { return v.toFixed(5); }).join();
+    var key = sun.map(function (v) { return v.toFixed(5); }).join() + "," + lightK.toFixed(6);
     if (key !== this.atmoKey) {
       this.atmoKey = key;
       this._target(this.atmoFbo, 256, 128);
-      this.progAtmo.use().set({ uSunDir: sun, uSunI: SUN_I, uSkyBoost: 2.0 });
+      this.progAtmo.use().set({ uSunDir: sun, uSunI: SUN_I * lightK, uSkyBoost: 2.0 });
       this._fullscreen();
     }
 
@@ -2928,7 +2997,7 @@
     if (spray.n) {
       gl.bindBuffer(gl.ARRAY_BUFFER, spray.buf);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, spray.data, 0, spray.n * 8);
-      var fw = norm3(camera.fwd), rt = norm3(cross3(fw, [0, 1, 0])), upc = cross3(rt, fw);
+      var fw = norm3(camera.fwd), rt = norm3(cross3(fw, camera.up || [0, 1, 0])), upc = cross3(rt, fw);
       gl.depthMask(false);
       gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       this.progSpray.use().set(common).set({ uViewProj: vp, uCamRight: rt, uCamUp: upc });
@@ -2946,7 +3015,7 @@
       for (var i = 0; i < b.length; i++) {
         this._target(b[i].fbo, b[i].w, b[i].h);
         // only the sun and its glints, not the bright sky around it
-        this.progDown.use().set({ uSrc: src, uTexel: [1 / sw, 1 / sh], uThreshold: i === 0 ? 14 / p.exposure : 0 });
+        this.progDown.use().set({ uSrc: src, uTexel: [1 / sw, 1 / sh], uThreshold: i === 0 ? (14 - 12.5 * night) / this.exposureNow : 0 });
         this._fullscreen();
         src = b[i].tex; sw = b[i].w; sh = b[i].h;
       }
@@ -2963,7 +3032,7 @@
     // White balance for overhead sunlight, as a camera would: midday sand reads white.
     var wb = sunTransmittance([0, 1, 0]);
     this.progComposite.use().set({
-      uScene: this.sceneTex, uBloom: b[0].tex, uExposure: p.exposure, uBloomStr: p.bloom ? 0.12 : 0,
+      uScene: this.sceneTex, uBloom: b[0].tex, uExposure: this.exposureNow, uBloomStr: p.bloom ? 0.12 + 0.2 * night : 0, uNight: night,
       uWhite: [wb[1] / wb[0], 1, wb[1] / wb[2]],
     });
     this._fullscreen();

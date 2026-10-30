@@ -117,3 +117,46 @@ fetch, choppiness, foam, clarity, caustics, sun, clouds and render quality.
 ```
 node ocean-test.js   # spectrum, FFT, island and surf, reef life, floating and boat physics
 ```
+
+## Clear Lagoon II (`v2/`)
+
+`v2/ocean.html` is a copy of Clear Lagoon that pushes further, kept beside
+the original so the two can be compared (the `v2 →` / `← v1` button opens
+the other at the same spot and moment). Everything above still applies; v2
+adds:
+
+- **A simulated surf zone** (`v2/swe.js` is the CPU reference, the GPU runs
+  the same scheme). A 205 m shallow-water grid (512², 0.4 m cells) follows
+  you: staggered velocities, upwind mass fluxes, semi-Lagrangian advection,
+  wet/dry fronts and bottom friction. Offshore (deeper than ~3 m) it is
+  nudged toward the analytic swell; inside that line the water is free to
+  shoal, steepen, break into bores, run up the sand and wash back. Floating
+  things and the boat are carried by its currents.
+- **A peeling reef break**: a coral ledge on the windward reef, set at an
+  angle to the swell so waves break along it at ~10 m/s instead of all at
+  once.
+- **Curling lips**: where a front breaks hard, GPU particles (state in float
+  textures) are thrown forward off the crest at the wave's speed, fly over
+  the face and shatter into spray. They are drawn as a liquid surface in
+  screen space: sphere depths, a bilateral blur, normals from the smoothed
+  depth, then refraction, reflection, sunlight through the thin lip and foam
+  as it aerates. The panel's `lip throw` sets how readily they form;
+  `simulate the surf` switches back to the analytic waves.
+- **Float** (tool `5`): you become a swimmer's head on the water. A soft
+  buoyancy spring keeps your eyes ~35 cm above the surface, so you rise and
+  fall with the swell a beat behind it and whitewater that climbs faster
+  than you can float dunks you. Wave faces push you along, surf currents
+  carry you, `WASD` paddles, the view sways with the water, and `R` takes
+  you back out past the break.
+- **Night** (`N`, or the `night` slider): the moon takes the sun's place,
+  with stars, the Milky Way, a moonlit glitter path and night-adapted colour,
+  and crickets sing from the island.
+- **Bioluminescence**: at night the plankton light up wherever the water is
+  stirred, in breaking surf and bores, lips and spray, splashes, the boat's
+  wake, ripples spreading from anything moving, and around swimming fish,
+  turtles and rays. A fourth ripple channel remembers the stirring, so the
+  glow flashes and fades over a second or two. `plankton glow` sets it.
+
+```
+node v2/ocean-test.js   # all of the above, plus shallow-water mass, lake at rest, breaking and run-up
+```

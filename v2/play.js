@@ -29,7 +29,7 @@
   var G = 9.81, TAU = Math.PI * 2, RHO_W = 1025, RHO_A = 1.2;
   var MAX_OBJ = 16, MAX_PROBES = 64, MAX_PART = 4000;
   // probe slots: 0 camera (renderer), 1..48 objects (3 each), 49..56 boat
-  var OBJ_SLOT = 1, BOAT_SLOT = 49;
+  var OBJ_SLOT = 1, BOAT_SLOT = 49, FLOAT_SLOT = 57;   // probe slots (0 is the camera)
   var KINDS = [
     { name: "beach ball", r: 0.32, density: 55, cd: 0.5, code: 20 },
     { name: "coconut", r: 0.12, density: 620, cd: 0.6, code: 21 },
@@ -91,6 +91,8 @@
       var c = Math.cos(b.hdg), s2 = Math.sin(b.hdg);
       HULL.forEach(function (h, k) { pts[BOAT_SLOT + k] = [b.pos[0] + c * h[0] - s2 * h[1], b.pos[2] + s2 * h[0] + c * h[1]]; });
     }
+    var f = this.floater;
+    if (f) [[0, 0], [FLOAT_D, 0], [-FLOAT_D, 0], [0, FLOAT_D], [0, -FLOAT_D]].forEach(function (d, k) { pts[FLOAT_SLOT + k] = [f.pos[0] + d[0], f.pos[2] + d[1]]; });
     this._pts = pts;
     return pts;
   };
@@ -387,6 +389,57 @@
   };
 
   // ----------------------------------------------------------------- step
+  // ------------------------------------------------------- you, floating
+  // The camera as a swimmer's head. Buoyancy is a soft spring toward eye
+  // height above the surface, so you rise and fall with the swell a beat
+  // behind it and a bore that climbs faster than you can float dunks you.
+  // The slope pushes you down a wave's face, surf currents carry you,
+  // strokes paddle, and the surface's tilt sways your view.
+  var EYE = 0.35, FLOAT_D = 0.7;
+  Playground.prototype.startFloat = function (x, z) {
+    this.floater = { pos: [x, this.ground(x, z) < 0 ? EYE : this.ground(x, z) + EYE, z], vel: [0, 0, 0], n: [0, 1, 0], age: 0, wet: false };
+  };
+  Playground.prototype.stopFloat = function () { this.floater = null; };
+  // stroke: paddling direction (x, z) in the world, length 0..1
+  Playground.prototype.updateFloat = function (dt, stroke) {
+    var f = this.floater;
+    dt = Math.min(dt, 0.05);
+    if (!f || dt <= 0) return;
+    f.age += dt;
+    var P = this.probeH, s = FLOAT_SLOT, ok = this.probeOK && f.age > 0.25;
+    var h = ok ? P[s] : f.pos[1] - EYE;
+    var sx = ok ? (P[s + 1] - P[s + 2]) / (2 * FLOAT_D) : 0, sz = ok ? (P[s + 3] - P[s + 4]) / (2 * FLOAT_D) : 0;
+    var cw = ok ? this.probeC[s * 3 + 2] : 0, cx = ok ? this.probeC[s * 3] : 0, cz = ok ? this.probeC[s * 3 + 1] : 0;
+    var g = this.ground(f.pos[0], f.pos[2]);
+    if (ok && f.age < 0.5) { f.pos[1] = Math.max(h, g) + EYE; f.vel[1] = 0; }
+    // buoyancy, firmer the deeper you are pushed under; water damps it
+    var dy = Math.max(h, g) + EYE - f.pos[1];
+    f.vel[1] += ((dy > 0 ? 26 + 30 * Math.min(dy, 1) : 24) * dy - 6 * f.vel[1]) * dt;
+    // sliding down the face, paddling, and drag toward the moving water
+    var depth = h - g, swim = depth > 0.25 ? 1 : 0;
+    f.vel[0] += (-G * sx * 0.8 * swim + stroke[0] * 2.4) * dt;
+    f.vel[2] += (-G * sz * 0.8 * swim + stroke[1] * 2.4) * dt;
+    var kd = 1 - Math.exp(-(depth > 0.25 ? 1.7 : 6) * dt);
+    f.vel[0] += (cx - f.vel[0]) * kd; f.vel[2] += (cz - f.vel[2]) * kd;
+    var nx = f.pos[0] + f.vel[0] * dt, nz = f.pos[2] + f.vel[2] * dt;
+    if (this.ground(nx, nz) > Math.max(h, g) + 0.5) { f.vel[0] = f.vel[2] = 0; }   // a rock or the beach ahead
+    else { f.pos[0] = nx; f.pos[2] = nz; }
+    f.pos[1] += f.vel[1] * dt;
+    if (f.pos[1] < g + 0.15) { f.pos[1] = g + 0.15; f.vel[1] = Math.max(f.vel[1], 0); }
+    // the view leans with the water under you (smoothed: a head, not a cork)
+    var ln = Math.hypot(sx, 1, sz), kn = 1 - Math.exp(-3 * dt);
+    f.n[0] += (-sx / ln - f.n[0]) * kn; f.n[1] += (1 / ln - f.n[1]) * kn; f.n[2] += (-sz / ln - f.n[2]) * kn;
+    // ripples from bobbing and paddling; a splash going under or bursting out
+    var under = f.pos[1] < h - 0.02;
+    // (no spray: it would fly straight into your eyes)
+    if (ok && under !== f.wet && f.age > 1 && Math.abs(f.vel[1]) > 0.6) {
+      this.drop(f.pos[0], f.pos[2], 0.5, -0.8, 0.4);
+      this.events.push({ x: f.pos[0], z: f.pos[2], size: 0.3 });
+    }
+    f.wet = under;
+    if (ok && this.rnd() < dt * (2 + 6 * Math.hypot(stroke[0], stroke[1]))) this.drop(f.pos[0], f.pos[2], 0.35, -0.25 - 0.4 * Math.hypot(stroke[0], stroke[1]), 0.05);
+  };
+
   Playground.prototype.update = function (dt, time, cam, surf) {
     dt = Math.min(dt, 0.05);
     if (dt <= 0) return;

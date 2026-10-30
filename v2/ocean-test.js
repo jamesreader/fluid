@@ -24,6 +24,11 @@
  *   (g) play.js: floating objects settle at their Archimedes draught and
  *       drift with the swell, rocks sink, and the boat planes, turns,
  *       leaves a wake and throws spray.
+ *   (h) swe.js, the surf-zone shallow water (the GPU runs the same scheme):
+ *       it conserves water in a closed basin, keeps a lake at rest on a
+ *       sloping beach still (no spurious currents at the waterline), and a
+ *       swell driven over a beach steepens into breaking fronts in shallow
+ *       water (not offshore) and runs up above the still-water line.
  *
  * Exits 0 on pass, non-zero with a FAIL message otherwise.
  */
@@ -241,6 +246,51 @@ console.log("--- (g) floating things and the boat ---");
   console.log("    boat top speed " + (maxV * 1.944).toFixed(0) + " kn, heading after turning " + (b.hdg * 180 / Math.PI).toFixed(0) + " deg, wake drops " + drops + ", spray up to " + spray + " drops in the air");
   if (finite && maxV > 8 && maxV < 22 && b.hdg > 0.5 && drops > 1000 && spray > 50) pass("(g) the boat planes, turns, leaves a wake and throws spray");
   else fail("(g) boat: finite " + finite + ", top " + maxV.toFixed(1) + " m/s, heading " + b.hdg.toFixed(2) + ", drops " + drops + ", spray " + pg.pN);
+})();
+
+// ---------------------------------------------------------------------- (h)
+(function () {
+  console.log("--- (h) surf-zone shallow water ---");
+  var SWE = require("./swe.js"), n = 240, m = 4, dx = 0.4, k, i, j;
+  // closed basin, flat 2 m bed, a 0.5 m hump of water sloshing about
+  var g = new SWE.Grid(n, m, dx);
+  for (j = 0; j < m; j++) for (i = 0; i < n; i++) { k = j * n + i; g.b[k] = -2; g.h[k] = 2 + 0.5 * Math.exp(-Math.pow((i - 60) / 12, 2)); }
+  var m0 = g.mass(), finite = true;
+  for (var s = 0; s < 3000; s++) g.step(0.012);
+  for (k = 0; k < n * m; k++) if (!isFinite(g.h[k]) || !isFinite(g.u[k])) finite = false;
+  var dm = Math.abs(g.mass() - m0) / m0;
+  console.log("    mass drift after 36 s of sloshing: " + (dm * 100).toExponential(2) + " %");
+  if (finite && dm < 1e-5) pass("(h) the shallow-water solver conserves water");
+  else fail("(h) mass drift " + dm + ", finite " + finite);
+
+  // lake at rest over a 1:20 beach that rises out of the water
+  function beach(grid) { for (j = 0; j < m; j++) for (i = 0; i < n; i++) grid.b[j * n + i] = -4 + i * dx / 20; }
+  g = new SWE.Grid(n, m, dx); beach(g); g.fillStill();
+  for (s = 0; s < 1500; s++) g.step(0.012);
+  var vmax = 0, emax = 0;
+  for (k = 0; k < n * m; k++) { vmax = Math.max(vmax, Math.abs(g.u[k]), Math.abs(g.w[k])); if (g.h[k] > SWE.DRY) emax = Math.max(emax, Math.abs(g.b[k] + g.h[k])); }
+  console.log("    still water after 18 s: max current " + vmax.toExponential(1) + " m/s, max surface " + emax.toExponential(1) + " m");
+  if (vmax < 1e-4 && emax < 1e-4) pass("(h) still water on a sloping beach stays still");
+  else fail("(h) lake at rest drifts: current " + vmax + ", surface " + emax);
+
+  // a 1 m, 9.5 s swell forced at the deep end, as the GPU relaxes toward the analytic waves
+  g = new SWE.Grid(n, m, dx); beach(g); g.fillStill();
+  var T = 9.5, Hw = 1.0, d0 = 4, c0 = Math.sqrt(9.81 * d0), steepAt = [], runup = 0;
+  for (k = 0; k < n * m; k++) if (k % n < 12) g.relax[k] = 12;
+  for (s = 0; s < 5000; s++) {
+    var t = s * 0.012, e = 0.5 * Hw * Math.sin(2 * Math.PI * t / T) * Math.min(1, t / T);
+    for (j = 0; j < m; j++) for (i = 0; i < 12; i++) { k = j * n + i; g.tEta[k] = e; g.tU[k] = c0 * e / d0; g.tW[k] = 0; }
+    g.step(0.012);
+    if (t > 2 * T) for (i = 14; i < n - 2; i++) {
+      var f = g.frontScore(i, 1);
+      if (f.steep > 0.7 && f.crest > 0.2) steepAt.push(-g.b[n + i]);
+      if (g.h[n + i] > SWE.DRY) runup = Math.max(runup, g.b[n + i] + g.h[n + i] > 0 && g.b[n + i] > 0 ? g.b[n + i] : 0);
+    }
+  }
+  var deepest = steepAt.length ? Math.max.apply(null, steepAt) : NaN;
+  console.log("    breaking fronts in " + steepAt.length + " cell-steps, deepest at " + deepest.toFixed(2) + " m; run-up " + runup.toFixed(2) + " m above still water");
+  if (steepAt.length > 50 && deepest < 3 && runup > 0.15) pass("(h) the swell breaks in shallow water and runs up the beach");
+  else fail("(h) breaking: " + steepAt.length + " steep cells, deepest " + deepest + " m, run-up " + runup + " m");
 })();
 
 console.log("");
