@@ -1669,7 +1669,7 @@
     "uint pcg(uint v) { uint st = v * 747796405u + 2891336453u; uint wd = ((st >> ((st >> 28u) + 4u)) ^ st) * 277803737u; return (wd >> 22u) ^ wd; }",
     "float rnd(inout uint s) { s = pcg(s); return float(s) * (1.0 / 4294967296.0); }",
   ].join("\n");
-  var FS_LIP_UPDATE = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + C_SWE + "\n" + C_PCG + "\n" + [
+  var FS_LIP_UPDATE = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SWE + "\n" + C_PCG + "\n" + [
     "uniform sampler2D uPA, uPB, uSweAux;",
     "uniform float uDt, uFrame, uLipRate;",
     "uniform vec2 uOShift;",            // the grid origin moved: keep particles put in the world
@@ -1728,6 +1728,20 @@
     "    oB = vec4(dir.x * speed, 0.3 + 0.9 * rnd(seed), dir.y * speed, 0.0);",
     "    return;",
     "  }",
+    // the analytic plunging lip (drawn as the folded surface until the wave
+    // breaks) pours a curtain off its tip into the trough
+    "  for (int i = 0; i < 4; i++) {",
+    "    vec2 q = uSweC + (vec2(rnd(seed), rnd(seed)) - 0.5) * uSweSize * 0.9;",
+    "    if (sweMask(q) <= 0.0) continue;",
+    "    Surf sw = shoreWave(q, 0.0);",
+    "    float plunge = smoothstep(0.9, 1.02, sw.s) * (1.0 - smoothstep(1.25, 1.45, sw.s));",
+    "    float tip = exp(-sw.th * sw.th / 0.02);",
+    "    if (plunge * tip * min(sw.H, 2.0) * uLipRate * 12.0 * uDt <= rnd(seed)) continue;",
+    "    float c = sqrt(9.81 * (max(-worldAt(q, 0.0).x, 0.3) + 0.5 * sw.H)) * (1.0 + 0.3 * rnd(seed));",
+    "    oA = vec4(q.x + sw.d.x, sw.d.y + 0.05, q.y + sw.d.z, 2.2);",
+    "    oB = vec4(sw.n.x * c, 0.2 + 0.8 * rnd(seed), sw.n.y * c, 0.0);",
+    "    return;",
+    "  }",
     "}",
   ].join("\n");
   // Particles drawn as points straight from the state textures
@@ -1743,7 +1757,9 @@
     "  bool spray = B.w < 0.0;",
     "  if (A.w <= 0.0 || (uKind < 0.5) == spray) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vR = vZ = vAge = 0.0; return; }",
     "  vec4 c = uViewProj * vec4(A.xyz, 1.0);",
-    "  float r = uKind < 0.5 ? uRadius : 0.04 + 0.07 * fract(float(gl_VertexID) * 0.618034);",
+    // a lip at arm's length would be one giant drop filling the view
+    "  if (uKind < 0.5 && c.w < 2.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vR = vZ = vAge = 0.0; return; }",
+    "  float r = uKind < 0.5 ? uRadius : 0.025 + 0.05 * fract(float(gl_VertexID) * 0.618034);",
     "  gl_Position = c;",
     "  gl_PointSize = clamp(2.0 * r * uPointScale / max(c.w, 0.05), 1.0, uMaxPoint);",
     "  vR = r; vZ = c.w; vAge = uKind < 0.5 ? B.w : sat01(A.w * 2.0) * smoothstep(0.4, 1.6, c.w);",
@@ -1772,18 +1788,21 @@
     "  o = vec4(th, th * smoothstep(0.35, 1.1, vAge), 0.0, 0.0);",
     "}",
   ].join("\n");
-  // depth-aware blur that keeps silhouettes sharp
+  // depth-aware blur that keeps silhouettes sharp; its reach is a fixed
+  // width in the world (~0.4 m), so near particles merge into a sheet too
   var FS_LIP_BLUR = HEAD + [
     "uniform sampler2D uSrc;",
     "uniform vec2 uStep;",
+    "uniform float uPxPerM;",          // texels per metre at 1 m
     "in vec2 vUv;",
     "out vec4 o;",
     "void main() {",
     "  float z0 = texture(uSrc, vUv).r;",
     "  if (z0 > 9000.0) { o = vec4(z0); return; }",
     "  float sum = 0.0, wsum = 0.0, falloff = 1.0 / (0.12 + 0.01 * z0);",
+    "  float reach = clamp(0.4 * uPxPerM / max(z0, 0.1) / 7.0, 1.0, 2.5);",
     "  for (int k = -7; k <= 7; k++) {",
-    "    float z = texture(uSrc, vUv + uStep * float(k)).r;",
+    "    float z = texture(uSrc, vUv + uStep * (float(k) * reach)).r;",
     "    if (z > 9000.0) continue;",
     "    float dz = (z - z0) * falloff;",
     "    float wgt = exp(-float(k * k) / 18.0 - dz * dz);",
@@ -1848,7 +1867,7 @@
     "out vec4 o;",
     "void main() {",
     "  float d = length(gl_PointCoord * 2.0 - 1.0);",
-    "  float a = (1.0 - smoothstep(0.2, 1.0, d)) * vAge * 0.75;",
+    "  float a = (1.0 - smoothstep(0.1, 1.0, d)) * vAge * 0.55;",
     "  if (a < 0.004) discard;",
     "  vec3 sky = PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb;",
     "  o = vec4(((uSunCol * 0.95 + sky) / PI * 0.9 + uGlowCol * 2.5) * a, a);",
@@ -2454,7 +2473,7 @@
     var gl = this.gl, NP = this.LIP_N * this.LIP_N, self = this;
     var fw = norm3(camera.fwd), rt = norm3(cross3(fw, camera.up || [0, 1, 0])), upc = cross3(rt, fw);
     var f = 1 / Math.tan(camera.fov / 2);
-    var pts = { uPA: this.lipA[this.lipCur], uPB: this.lipB[this.lipCur], uViewProj: vp, uRadius: 0.28, uMaxPoint: this.maxPoint };
+    var pts = { uPA: this.lipA[this.lipCur], uPB: this.lipB[this.lipCur], uViewProj: vp, uRadius: 0.38, uMaxPoint: this.maxPoint };
     gl.bindVertexArray(this.emptyVao);
     // 1. eye depth of the nearest lip surface
     this._target(this.lipZF, this.lipW, this.lipH);
@@ -2472,10 +2491,10 @@
     gl.disable(gl.BLEND);
     // 3. smooth the depth (separable, edge-preserving)
     this._target(this.lipZ2F, this.lipW, this.lipH);
-    this.progLipBlur.use().set({ uSrc: this.lipZ, uStep: [1 / this.lipW, 0] });
+    this.progLipBlur.use().set({ uSrc: this.lipZ, uStep: [1 / this.lipW, 0], uPxPerM: 0.5 * this.lipH * f });
     this._fullscreen();
     this._target(this.lipZBF, this.lipW, this.lipH);
-    this.progLipBlur.use().set({ uSrc: this.lipZ2, uStep: [0, 1 / this.lipH] });
+    this.progLipBlur.use().set({ uSrc: this.lipZ2, uStep: [0, 1 / this.lipH], uPxPerM: 0.5 * this.lipH * f });
     this._fullscreen();
     // 4. composite over a copy of the scene
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.sceneFbo);
