@@ -13,10 +13,12 @@
  *       bands neither lose nor double-count waves (Hs within 5%).
  *   (c) Hermitian packing: h0 texels carry conj(h0(-k)) of their mirror, so
  *       every field the GPU synthesises is real.
- *   (d) wind sanity: stronger wind or longer fetch makes bigger waves, and
- *       a 6 m/s lagoon breeze stays in the 0.3-0.9 m range.
- *   (e) bathymetry: tiles seamlessly, spans shallow bars to deep channels,
- *       and the CPU floor sampler agrees with the stored shape.
+ *   (d) wind sanity: stronger wind or longer fetch makes bigger waves, a
+ *       6 m/s breeze stays in the 0.3-0.9 m range, and the swell adds its
+ *       energy on top.
+ *   (e) the island (world.js): one island with a summit and a beach band,
+ *       finite shore fields, swell arriving at the surf beach in order, and a
+ *       reef that keeps the lagoon calmer than the open surf beach.
  *
  * Exits 0 on pass, non-zero with a FAIL message otherwise.
  */
@@ -78,40 +80,62 @@ console.log("--- (c) Hermitian packing ---");
 /* ------------------------------------------------------------------ (d) */
 console.log("--- (d) wind sanity ---");
 (function () {
-  function hs(o) { return 4 * Math.sqrt(Ocean.spectrumVariance(params(o))); }
+  // wind sea alone (swell 0), then the swell on top
+  function hs(o) { return 4 * Math.sqrt(Ocean.spectrumVariance(params(Object.assign({ swell: 0 }, o)))); }
   var base = hs({}), windy = hs({ wind: 12 }), longFetch = hs({ fetch: 150 });
+  var both = hs({ swell: 1.2 }), expect = Math.sqrt(base * base + 1.2 * 1.2);
+  console.log("    with a 1.2 m swell: Hs " + both.toFixed(2) + " m (independent seas: " + expect.toFixed(2) + " m)");
+  if (Math.abs(both / expect - 1) < 0.08) pass("(d) swell adds its energy to the wind sea");
+  else fail("(d) swell + wind sea Hs " + both.toFixed(2) + " m, expected about " + expect.toFixed(2) + " m");
   console.log("    Hs default " + base.toFixed(2) + " m, wind 12 m/s " + windy.toFixed(2) + " m, fetch 150 km " + longFetch.toFixed(2) + " m");
   if (base > 0.3 && base < 0.9) pass("(d) default breeze Hs " + base.toFixed(2) + " m");
   else fail("(d) default Hs " + base.toFixed(2) + " m outside 0.3-0.9 m");
-  // growth is sub-linear here on purpose: in 4.5 m of water the TMA factor caps long waves
   if (windy > base * 1.4 && longFetch > base * 1.3) pass("(d) more wind / fetch -> bigger waves");
   else fail("(d) wave height doesn't grow with wind and fetch");
 })();
 
 /* ------------------------------------------------------------------ (e) */
-console.log("--- (e) bathymetry ---");
+console.log("--- (e) the island ---");
 (function () {
-  var b = Ocean.makeBathymetry(256, 4242), n = b.n, p = params(), T = Ocean.BATHY_TILE;
-  var seam = 0, inner = 0;
-  for (var i = 0; i < n; i++) {
-    seam = Math.max(seam, Math.abs(b.shape[i * n] - b.shape[i * n + n - 1]), Math.abs(b.shape[i] - b.shape[(n - 1) * n + i]));
-    inner = Math.max(inner, Math.abs(b.shape[i * n + 1] - b.shape[i * n]));
+  var World = require("./world.js");
+  var t0 = Date.now(), w = World.build({ swell: 1.2, swellDir: 35 });
+  console.log("    built in " + (Date.now() - t0) + " ms " + JSON.stringify(w.timings));
+  var N = w.N, land = 0, top = -1e9, beach = 0, finite = true;
+  for (var k = 0; k < N * N; k++) {
+    var h = w.height[k];
+    if (h >= 0) land++;
+    if (h > top) top = h;
+    if (h > 0 && h < 2.5) beach++;
+    if (!isFinite(w.arrival[k]) || !isFinite(w.waveH[k]) || !isFinite(w.stage[k])) finite = false;
   }
-  if (seam <= inner * 1.5) pass("(e) tiles seamlessly (edge step " + seam.toFixed(3) + " vs interior " + inner.toFixed(3) + ")");
-  else fail("(e) seam at the tile edge: " + seam.toFixed(3) + " vs interior steps " + inner.toFixed(3));
-  var d = [];
-  for (var z = 0; z < 64; z++) for (var x = 0; x < 64; x++) d.push(Ocean.floorDepth(b, p, x * T / 64, z * T / 64));
-  d.sort(function (a, c) { return a - c; });
-  var lo = d[Math.floor(d.length * 0.02)], hi = d[Math.floor(d.length * 0.98)];
-  console.log("    depth 2%.." + "98%: " + lo.toFixed(1) + " .. " + hi.toFixed(1) + " m");
-  if (lo < 2.5 && hi > 9 && d[0] >= 0.6) pass("(e) shallow bars and deep channels, never above 0.6 m");
-  else fail("(e) depth range " + lo.toFixed(1) + ".." + hi.toFixed(1) + " m");
-  var texel = T / n, k = 37 * n + 91;   // texel centre
-  var want = Math.max(0.6, p.depth * Math.exp(2 * p.relief * b.shape[k]));
-  var got = Ocean.floorDepth(b, p, (91 + 0.5) * texel, (37 + 0.5) * texel);
-  var wrapped = Ocean.floorDepth(b, p, (91 + 0.5) * texel - 3 * T, (37 + 0.5) * texel + T);
-  if (Math.abs(got - want) < 1e-9 && Math.abs(wrapped - want) < 1e-6) pass("(e) CPU sampler matches texel centres and wraps");
-  else fail("(e) floorDepth " + got + " / " + wrapped + " vs " + want);
+  var landKm2 = land * w.DX * w.DX / 1e6;
+  console.log("    land " + landKm2.toFixed(2) + " km^2, summit " + top.toFixed(0) + " m, beach band " + (beach * w.DX * w.DX / 1e4).toFixed(1) + " ha");
+  if (landKm2 > 0.2 && landKm2 < 1.5 && top > 150 && beach > 1000) pass("(e) one island with a summit and a beach band");
+  else fail("(e) island shape off: land " + landKm2 + " km^2, summit " + top);
+  if (finite) pass("(e) shore fields are finite everywhere");
+  else fail("(e) NaN/Inf in arrival, wave height or stage");
+  if (World.heightAt(w, 5000, 5000) === w.OCEAN_FLOOR) pass("(e) outside the tile is open ocean floor");
+  else fail("(e) heightAt outside the tile is " + World.heightAt(w, 5000, 5000));
+  // walk in from the open sea to the surf beach (windward side)
+  function at(arr, x, z) { return World.bilinear(arr, x, z, 0); }
+  var ax = Math.cos(World.WINDWARD), az = Math.sin(World.WINDWARD), prev = -Infinity, monotone = true, shore = 0;
+  for (var r = 900; r > 0; r -= 4) {
+    var x = ax * r, z = az * r;
+    if (World.heightAt(w, x, z) >= 0) { shore = r; break; }
+    var A = at(w.arrival, x, z);
+    if (A < prev - 0.5) monotone = false;
+    prev = A;
+  }
+  if (monotone && shore > 0) pass("(e) swell reaches the surf beach later the closer it gets (shore at r=" + shore + " m)");
+  else fail("(e) arrival time not increasing toward the surf beach");
+  // biggest surf on the open side, small waves inside the reef
+  var surf = 0, lagoon = 0;
+  for (r = shore + 200; r > shore; r -= 2) surf = Math.max(surf, at(w.waveH, ax * r, az * r));
+  var la = World.WINDWARD + Math.PI;
+  for (r = 380; r < 600; r += 2) { if (World.heightAt(w, Math.cos(la) * r, Math.sin(la) * r) > -2) continue; lagoon = Math.max(lagoon, at(w.waveH, Math.cos(la) * r, Math.sin(la) * r)); }
+  console.log("    max wave height: surf beach " + surf.toFixed(2) + " m, lee lagoon " + lagoon.toFixed(2) + " m");
+  if (surf > 0.8 && lagoon < 0.5 * surf) pass("(e) reef shelters the lagoon (" + lagoon.toFixed(2) + " m vs " + surf.toFixed(2) + " m surf)");
+  else fail("(e) surf " + surf.toFixed(2) + " m vs lagoon " + lagoon.toFixed(2) + " m");
 })();
 
 console.log("");
