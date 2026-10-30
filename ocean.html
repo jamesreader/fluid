@@ -186,8 +186,8 @@ function lagoonMain() {
   // ---------------------------------------------------------------- camera
   // in the lagoon, facing the island's peak across clear water
   var HOME = { pos: [330, 3, 420], yaw: -2.3, pitch: -0.06 };
-  var cam = { pos: HOME.pos.slice(), yaw: HOME.yaw, pitch: HOME.pitch, fov: 62 * Math.PI / 180, speed: 4 };
-  if (typeof saved.camSpeed === "number") cam.speed = saved.camSpeed;
+  var cam = { pos: HOME.pos.slice(), yaw: HOME.yaw, pitch: HOME.pitch, fov: 62 * Math.PI / 180, speed: 10 };
+  if (typeof saved.flySpeed === "number") cam.speed = saved.flySpeed;
   if (typeof saved.fov === "number") cam.fov = saved.fov * Math.PI / 180;
   var cruise = !!saved.cruise;
   // ?cam=x,y,z,yaw,pitch&t=seconds: arrive where the other version left off
@@ -284,7 +284,7 @@ function lagoonMain() {
   cv.addEventListener("wheel", function (e) {
     e.preventDefault();
     var d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-    cam.speed = Math.max(0.5, Math.min(400, cam.speed * Math.exp(-d * 0.0015)));
+    cam.speed = Math.max(0.5, Math.min(1500, cam.speed * Math.exp(-d * 0.0015)));
     syncSpeed(); store();
   }, { passive: false });
 
@@ -485,7 +485,7 @@ function lagoonMain() {
 
   function moveCamera(dt) {
     if (tool === "boat" && play.boat) { driveBoat(dt); return; }
-    var fast = keys.ShiftLeft || keys.ShiftRight ? 4 : 1;
+    var fast = keys.ShiftLeft || keys.ShiftRight ? 10 : 1;
     var v = cam.speed * fast * dt;
     var fx = Math.cos(cam.yaw), fz = Math.sin(cam.yaw), f = fwd();
     var mx = 0, my = 0, mz = 0;
@@ -553,7 +553,7 @@ function lagoonMain() {
   bloomChk.addEventListener("change", function () { params.bloom = bloomChk.checked; renderer.setParams({ bloom: params.bloom }); store(); });
 
   var h3 = document.createElement("h3"); h3.textContent = "Camera"; panel.appendChild(h3);
-  var spRow = row('<label for="ui-speed">fly speed</label><input type="range" id="ui-speed" min="-0.7" max="2.6" step="0.01" title="the mouse wheel does this too"><output></output>');
+  var spRow = row('<label for="ui-speed">fly speed</label><input type="range" id="ui-speed" min="-0.3" max="3.18" step="0.01" title="the mouse wheel does this too"><output></output>');
   var spInp = spRow.querySelector("input"), spOut = spRow.querySelector("output");
   function syncSpeed() { spInp.value = Math.log10(cam.speed); spOut.textContent = (cam.speed < 10 ? cam.speed.toFixed(1) : Math.round(cam.speed)) + " m/s"; }
   spInp.addEventListener("input", function () { cam.speed = Math.pow(10, +spInp.value); syncSpeed(); store(); });
@@ -569,7 +569,7 @@ function lagoonMain() {
     params = Object.assign({}, defaults);
     renderer.setParams(params);
     renderer.rebuildShore();
-    cam.speed = 4; cam.fov = 62 * Math.PI / 180; cruise = false;
+    cam.speed = 10; cam.fov = 62 * Math.PI / 180; cruise = false;
     syncUI(); store();
   });
   var more = document.createElement("p"); more.className = "note";
@@ -589,7 +589,7 @@ function lagoonMain() {
   function store() {
     var o = {};
     Object.keys(params).forEach(function (k) { if (params[k] !== defaults[k]) o[k] = params[k]; });
-    o.camSpeed = cam.speed; o.fov = Math.round(cam.fov * 180 / Math.PI); o.cruise = cruise; o.sound = !!(snd && snd.on);
+    o.flySpeed = cam.speed; o.fov = Math.round(cam.fov * 180 / Math.PI); o.cruise = cruise; o.sound = !!(snd && snd.on);
     saveOpts(o);
   }
   syncUI();
