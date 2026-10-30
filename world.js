@@ -314,36 +314,66 @@
     }
     blur(shadow, 20); blur(shadow, 20);
     var H = new Float32Array(n2), stage = new Float32Array(n2);
-    var ratio = new Float32Array(n2).fill(1), broke = new Float32Array(n2).fill(-1);   // arrival time of the break, -1 = not breaking
-    var hBreak = new Float32Array(n2);                     // height of the last breaker on this ray
+    // Carried along each ray: the height ratio to the unbroken swell, how
+    // much of the wave has broken (0..1), the arrival time of the break, and
+    // the breaker height. Each cell reads them 1.2 cells upwave, bilinearly
+    // over the cells the wave has already reached, from the ray and from
+    // either side of it: the sideways spread stands in for diffraction, so
+    // neighbouring rays blend instead of leaving straight-edged wedges where
+    // one ray broke on the reef and the next did not.
+    var ratio = new Float32Array(n2).fill(1), brokeF = new Float32Array(n2), broke = new Float32Array(n2).fill(-1);
+    var hBreak = new Float32Array(n2);
     var order = orderBy(A, 8192);
+    var up = { r: 1, f: 0, b: -1, hb: 0 };
+    var LAT = [[-4, 0.25], [0, 0.5], [4, 0.25]];   // cells across the ray: ~70 m of spread over a lagoon crossing
+    function upwave(k, i, j) {
+      var ws = 0, r = 0, fr = 0, hb = 0, bw = 0, bt = 0;
+      for (var s = 0; s < 3; s++) {
+      var x = i - dirX[k] * 1.2 - dirZ[k] * LAT[s][0], z = j - dirZ[k] * 1.2 + dirX[k] * LAT[s][0];
+      var i0 = Math.floor(x), j0 = Math.floor(z), fx = x - i0, fz = z - j0;
+      for (var c = 0; c < 4; c++) {
+        var ci = i0 + (c & 1), cj = j0 + (c >> 1);
+        if (ci < 0 || cj < 0 || ci >= N || cj >= N) continue;
+        var q = cj * N + ci;
+        if (q === k || !(A[q] < A[k])) continue;
+        var wq = ((c & 1) ? fx : 1 - fx) * ((c >> 1) ? fz : 1 - fz) * LAT[s][1];
+        if (wq <= 0) continue;
+        hb += wq * hBreak[q]; ws += wq;
+        if (f.land[q]) { r += wq; continue; }
+        r += wq * ratio[q]; fr += wq * brokeF[q];
+        if (brokeF[q] > 0) { bt += wq * brokeF[q] * broke[q]; bw += wq * brokeF[q]; }
+      }
+      }
+      if (ws > 0) { up.r = r / ws; up.f = fr / ws; up.hb = hb / ws; up.b = bw > 0 ? bt / bw : -1; }
+      else { up.r = 1; up.f = 0; up.hb = 0; up.b = -1; }
+      return up;
+    }
     for (o = 0; o < n2; o++) {
       k = order[o]; i = k % N; j = (k / N) | 0;
-      var ui = Math.round(i - dirX[k] * 1.2), uj = Math.round(j - dirZ[k] * 1.2), up = -1;
-      if (ui >= 0 && ui < N && uj >= 0 && uj < N) { up = uj * N + ui; if (!(A[up] < A[k])) up = -1; }
+      upwave(k, i, j);
       if (!f.land[k]) {
         var d = Math.max(-h[k], 0.05);
         var Hu = swellH * (1 - 0.8 * shadow[k]) * shoaling(d);
-        var r = up >= 0 ? ratio[up] : 1, b = up >= 0 ? broke[up] : -1;
+        var r = up.r, bf = up.f, b = up.b, hb = up.hb;
         var Hc = r * Hu;
-        var hb = up >= 0 ? hBreak[up] : 0;
-        if (b < 0 && Hc > 0.78 * d) { b = A[k]; hb = Hc; }   // break point
+        if (bf < 1 && Hc > 0.78 * d) { b = bf > 0 ? b + (A[k] - b) * (1 - bf) : A[k]; hb = Hc; bf = 1; }   // break point
         // breaker limit 0.78 d; a bore keeps ~0.55 d plus the momentum that
         // carries it up the beach (scaled by the incoming swell)
-        var cap = b >= 0 ? 0.55 * d + 0.16 * swellH * (1 - 0.8 * shadow[k]) : 0.78 * d;
+        var cap = 0.78 * d + (0.55 * d + 0.16 * swellH * (1 - 0.8 * shadow[k]) - 0.78 * d) * bf;
         if (Hc > cap) { Hc = cap; r = Hc / Hu; }
-        if (b >= 0 && Hc < 0.3 * d) b = -1;                  // reformed in deeper water
-        ratio[k] = r; broke[k] = b; hBreak[k] = hb;
+        if (bf > 0 && Hc < 0.3 * d) bf = 0;                  // reformed in deeper water
+        ratio[k] = r; brokeF[k] = bf; broke[k] = bf > 0 ? b : -1; hBreak[k] = hb;
         // in the last metre of depth the bore surges toward its run-up level,
         // meeting the swash on the sand without a step
-        if (b >= 0 && d < 1) Hc = Math.max(Hc, 1.3 * 0.45 * hb / 0.55 * (1 - d));
+        if (bf > 0 && d < 1) Hc = Math.max(Hc, bf * 1.3 * 0.45 * hb / 0.55 * (1 - d));
         H[k] = Hc * clamp01((24 - d) / 12);
-        stage[k] = b < 0 ? Math.min(Hc / (0.78 * d), 0.999) : 1 + clamp01((A[k] - b) / (0.55 * SWELL_T));
+        var sUn = Math.min(Hc / (0.78 * d), 0.999);
+        stage[k] = bf > 0 ? sUn + (1 + clamp01((A[k] - b) / (0.55 * SWELL_T)) - sUn) * bf : sUn;
       } else {
         // Swash: the bore runs up the sand to a run-up height R ~ 0.45 x the
         // breaker. On land H is sized so the bore crest (0.55 H) clears the
         // sand below R and falls short above it.
-        var hb2 = up >= 0 ? hBreak[up] : 0, R = 0.45 * hb2, hg = h[k];
+        var hb2 = up.hb, R = 0.45 * hb2, hg = h[k];
         hBreak[k] = hb2;
         H[k] = R > 0.02 && hg < R + 0.3 ? (hg + 1.3 * Math.max(R - hg, 0)) / 0.55 * smoothstep(R + 0.3, R, hg) : 0;
         stage[k] = 2;
