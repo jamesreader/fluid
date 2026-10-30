@@ -1021,7 +1021,7 @@
     "    float film = P.y - groundH(P.xz);",
     "    float edge = smoothstep(0.0, 0.03, film) * (1.0 - smoothstep(0.04, 0.16, film)) * step(1.5, sw.s);",
     "    float surf = sat(sw.foam * 1.8 - 0.3 + (lace - 0.5) * 1.2) + edge * smoothstep(0.45, 0.65, lace) * 0.8;",
-    "    surf = max(surf, sat(ripFoam * 1.4 - 0.35 + (lace - 0.5) * 2.2));",   // wakes and splashes: lacy, solid only where churned
+    "    surf = max(surf, sat(ripFoam * 1.4 - 0.35 + (lace - 0.5) * 2.2) * sat(ripFoam * 4.0));",   // wakes and splashes: lacy, solid only where churned
     "    float m = max(smoothstep(0.25, 0.95, foam * (0.5 + 0.9 * vnoise((vXZ + uOffD) * 2.0)) * uFoamStr), sat(surf));",
     "    vec3 foamCol = 0.85 * (uSunCol * max(dot(N, uSunDir), 0.0) * shadow + skyIrradiance()) / PI;",
     "    col = mix(col, foamCol, m);",
