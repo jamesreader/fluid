@@ -466,19 +466,77 @@
     "vec3 skyIrradiance() { return PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb; }",
   ].join("\n");
 
-  // The island tile (height, coral mask, coast distance, tone) and ground
-  // shading shared by the terrain pass and the floor seen through the water.
+  // The island tile: height, coral mask, coast distance, sand tone (2 m texels).
+  var C_WORLD = [
+    "uniform sampler2D uWorld;",
+    "uniform vec2 uWorldUV0;",     // uv of the grid origin O
+    "uniform float uWorldInv;",    // 1 / tile size
+    "vec2 worldUV(vec2 p) { return p * uWorldInv + uWorldUV0; }",
+    "vec4 worldAt(vec2 p, float lod) { return textureLod(uWorld, worldUV(p), lod); }",
+  ].join("\n");
+
+  // Shore waves: a 9.5 s swell train whose crests are level sets of the
+  // arrival time (phase phi, world.js). Its profile morphs with the breaking
+  // stage s: a sharpening, front-steepened swell (s < 1), a plunging lip
+  // thrown forward over the face (s ~ 1-1.4), then a whitewater bore with a
+  // long sloping back that runs up the beach as swash (s -> 2).
+  var C_SHORE = [
+    "uniform sampler2D uShore, uShoreK;",
+    "uniform vec2 uShoreWT, uGroupWT;",   // cos/sin of the swell and wave-group phases now
+    "uniform float uSurf;",                // surf height scale (0 = off)
+    // (forward lean, height) in units of H at phase th (crest at 0, front face < 0)
+    "vec2 surfProfile(float th, float s) {",
+    "  float steep = sat(s);",
+    "  float tf = th < 0.0 ? -PI * pow(-th / PI, 1.0 / (1.0 + 0.8 * steep)) : PI * pow(th / PI, 1.0 + 0.5 * steep);",
+    "  float c = cos(tf);",
+    "  float y = 0.5 * c + 0.12 * steep * (c * c - 0.5);",
+    "  float x = -0.5 * (0.3 + 0.45 * steep) * sin(tf);",
+    "  float plunge = smoothstep(0.85, 1.05, s) * (1.0 - smoothstep(1.2, 1.5, s));",
+    "  float lip = exp(-th * th / 0.2) * smoothstep(0.08, 0.42, y);",
+    "  x += plunge * 1.05 * lip;",
+    "  y -= plunge * 0.2 * lip * smoothstep(-0.1, 0.5, th);",
+    "  float bf = th < 0.0 ? smoothstep(-0.5, 0.0, th) : pow(1.0 - th / PI, 1.7);",
+    "  vec2 bore = vec2(0.28 * exp(-th * th / 0.07), 0.72 * bf - 0.17);",
+    "  return mix(vec2(x, y), bore, smoothstep(1.2, 1.55, s));",
+    "}",
+    "struct Surf { vec3 d; vec2 slope; vec4 jac; float th, s, H, foam; vec2 n; };",
+    // Displacement, slopes (dY/dx, dY/dz), horizontal Jacobian (Dxx, Dzz, Dxz,
+    // Dzx) and foam at undisplaced point p.
+    "Surf shoreWave(vec2 p, float lod) {",
+    "  Surf r; r.d = vec3(0.0); r.slope = vec2(0.0); r.jac = vec4(0.0); r.th = 0.0; r.s = 0.0; r.H = 0.0; r.foam = 0.0; r.n = vec2(1.0, 0.0);",
+    "  vec4 a = textureLod(uShore, worldUV(p), lod);",
+    "  float coh = length(a.xy);",         // mip-averaged phases lose coherence far away
+    "  float H = a.z * uSurf * sat(coh * 1.3 - 0.2);",
+    "  if (H < 0.004) return r;",
+    "  vec4 b = textureLod(uShoreK, worldUV(p), lod);",
+    "  H *= 0.72 + 0.28 * (uGroupWT.x * b.z + uGroupWT.y * b.w) / max(length(b.zw), 1e-3);",   // sets
+    "  float th = atan(uShoreWT.y * a.x - uShoreWT.x * a.y, uShoreWT.x * a.x + uShoreWT.y * a.y);",
+    "  vec2 K = b.xy, n = K / max(length(K), 1e-5);",
+    "  float s = a.w;",
+    "  vec2 f = surfProfile(th, s) * H;",
+    "  vec2 df = (surfProfile(th + 0.03, s) - surfProfile(th - 0.03, s)) * (H / 0.06);",
+    // theta = w t - phi, so d(theta)/dp = -K
+    "  r.d = vec3(n.x * f.x, f.y, n.y * f.x);",
+    "  r.slope = -df.y * K;",
+    "  r.jac = -df.x * vec4(n.x * K.x, n.y * K.y, n.x * K.y, n.y * K.x);",
+    "  r.th = th; r.s = s; r.H = H; r.n = n;",
+    "  float crest = smoothstep(0.82, 1.0, s) * exp(-(th + 0.05) * (th + 0.05) / 0.12);",
+    "  float bore = smoothstep(1.1, 1.4, s) * (th < 0.0 ? smoothstep(-0.55, -0.05, th) : exp(-th * 0.5));",
+    "  r.foam = sat(max(crest, bore) + smoothstep(1.0, 1.7, s) * 0.3) * sat(H * 4.0);",
+    "  return r;",
+    "}",
+  ].join("\n");
+
+  // Ground shading shared by the terrain pass and the floor seen through the water.
   var C_WATER = [
     "uniform vec3 uSigT, uSigS;",   // extinction / scattering per metre
     "uniform vec3 uSunRefr;",       // sun direction after refraction into the water (pointing down)
     "uniform float uSunTrans;",     // Fresnel transmittance of the sun through flat water
-    "uniform sampler2D uWorld;",
-    "uniform vec2 uWorldUV0, uOffD;",   // uv of the grid origin; detail-noise offset
-    "uniform float uWorldInv, uMaxH;",
+    "uniform vec2 uOffD;",          // detail-noise offset
+    "uniform float uMaxH;",
     "uniform sampler2D uCaustic;",
     "uniform float uCausL, uCausDepth, uCausStr;",
     "uniform vec2 uOffC, uCausShift;",
-    "vec4 worldAt(vec2 p, float lod) { return textureLod(uWorld, p * uWorldInv + uWorldUV0, lod); }",
     "float groundH(vec2 p) { return worldAt(p, 0.0).x; }",
     // central differences one mip texel apart (2 m at lod 0)
     "vec3 groundNormal(vec2 p, float lod) {",
@@ -649,15 +707,18 @@
 
   // Water height under the camera, written to a 1x1 texture each frame so
   // every later pass knows whether the eye is above or below the surface.
-  var FS_PROBE = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + [
-    "uniform sampler2D uWorld;",
-    "uniform vec2 uWorldUV0;",
-    "uniform float uWorldInv;",
+  var FS_PROBE = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + [
     "out vec4 o;",
-    "void main() {",
-    "  float depth = -textureLod(uWorld, uCam.xz * uWorldInv + uWorldUV0, 0.0).x;",
-    "  o = vec4(waterHeightF(uCam.xz, depthFade(depth)), 0.0, 0.0, 1.0);",
+    // invert the horizontal displacement, then read the height there
+    "float surfaceAt(vec2 xz) {",
+    "  vec2 p = xz;",
+    "  for (int i = 0; i < 4; i++) {",
+    "    vec3 f = depthFade(-worldAt(p, 0.0).x);",
+    "    p = xz - oceanDispF(p, vec3(0.0), f).xz - shoreWave(p, 0.0).d.xz;",
+    "  }",
+    "  return oceanDispF(p, vec3(0.0), depthFade(-worldAt(p, 0.0).x)).y + shoreWave(p, 0.0).d.y;",
     "}",
+    "void main() { o = vec4(surfaceAt(uCam.xz), 0.0, 0.0, 1.0); }",
   ].join("\n");
 
   var FS_ENV = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_CLOUDS + "\n" + [
@@ -711,7 +772,7 @@
   ].join("\n");
 
   // Background: sky (camera above water) or the underwater view of the floor.
-  var FS_BACK = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_CLOUDS + "\n" + C_ENV + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
+  var FS_BACK = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_CLOUDS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
     "uniform sampler2D uProbe;",
     "uniform mat4 uInvViewProj;",
     "uniform vec3 uSunDisk;",       // sun disk radiance
@@ -745,20 +806,19 @@
   // Surface mesh: a camera-centred grid whose cells grow exponentially with
   // distance. Each vertex reads displacement at the mip level matching its
   // cell size, so waves too short for the mesh fade out instead of aliasing.
-  var VS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + [
+  var VS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + [
     "in vec2 aPos;",
     "in float aCell;",
     "uniform mat4 uViewProj;",
     "uniform float uN;",
-    "uniform sampler2D uWorld;",
-    "uniform vec2 uWorldUV0;",
-    "uniform float uWorldInv;",
     "out vec2 vXZ;",
     "out vec3 vPos;",
     "void main() {",
     "  vec3 lod = log2(max(aCell * uN / uCascL, vec3(1.0)));",
-    "  float depth = -textureLod(uWorld, aPos * uWorldInv + uWorldUV0, clamp(log2(aCell / 2.0), 0.0, 8.0)).x;",
+    "  float wl = clamp(log2(aCell / 2.0), 0.0, 8.0);",
+    "  float depth = -worldAt(aPos, wl).x;",
     "  vec4 d = oceanDispF(aPos, lod, depthFade(depth));",
+    "  d.xyz += shoreWave(aPos, wl).d;",
     "  vec3 P = vec3(aPos.x + d.x, d.y, aPos.y + d.z);",
     "  vXZ = aPos;",
     "  vPos = P;",
@@ -766,7 +826,7 @@
     "}",
   ].join("\n");
 
-  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
+  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
     "uniform sampler2D uProbe;",
     "uniform float uFoamStr;",
     "in vec2 vXZ;",
@@ -782,7 +842,12 @@
     "  vec4 wd = worldAt(vXZ, 0.0);",
     "  vec3 fd = depthFade(-wd.x);",
     "  vec4 g = texture(uDer0, uv0) * fd.x + texture(uDer1, uv1) * fd.y + texture(uDer2, uv2) * fd.z;",
-    "  vec3 N = normalize(vec3(-g.x / max(1.0 + g.z, 0.2), 1.0, -g.y / max(1.0 + g.w, 0.2)));",
+    "  Surf sw = shoreWave(vXZ, 0.0);",
+    // surface normal from both tangent vectors (handles the folded lip too)
+    "  vec3 Tx = vec3(1.0 + g.z + sw.jac.x, g.x + sw.slope.x, sw.jac.w);",
+    "  vec3 Tz = vec3(sw.jac.z, g.y + sw.slope.y, 1.0 + g.w + sw.jac.y);",
+    "  vec3 N = normalize(cross(Tz, Tx));",
+    "  if (N.y < 0.05) N = normalize(vec3(N.x, 0.05, N.z));",
     "  float foam = texture(uDisp0, uv0).w * fd.x + texture(uDisp1, uv1).w * fd.y + 0.5 * texture(uDisp2, uv2).w * fd.z;",
     "  vec3 P = vPos;",
     "  vec3 toEye = uCam - P;",
@@ -815,8 +880,14 @@
     // light through thin wave crests
     "    float sss = pow(sat(dot(V, -uSunDir) * 0.6 + 0.4), 3.0) * sat(P.y * 1.5) * sat(1.0 - N.y + 0.15);",
     "    col += inscatter(0.5) * sss * 1.4;",
-    // whitecap foam, broken up by noise
-    "    float m = smoothstep(0.25, 0.95, foam * (0.5 + 0.9 * vnoise((vXZ + uOffD) * 2.0)) * uFoamStr);",
+    // whitecap foam, broken up by noise; surf whitewater is lacy where thin
+    // and solid where the bore churns; a lacy edge rims the swash film
+    "    vec2 fw = vXZ + uOffD - sw.n * (uTime * 0.6);",
+    "    float lace = vnoise(fw * 0.9) * 0.55 + vnoise(fw * 3.1) * 0.45;",
+    "    float film = P.y - groundH(P.xz);",
+    "    float edge = smoothstep(0.0, 0.03, film) * (1.0 - smoothstep(0.04, 0.16, film)) * step(1.5, sw.s);",
+    "    float surf = sat(sw.foam * 1.6 - 0.25 + (lace - 0.5) * 1.2) + edge * smoothstep(0.35, 0.6, lace);",
+    "    float m = max(smoothstep(0.25, 0.95, foam * (0.5 + 0.9 * vnoise((vXZ + uOffD) * 2.0)) * uFoamStr), sat(surf));",
     "    vec3 foamCol = 0.85 * (uSunCol * max(dot(N, uSunDir), 0.0) * shadow + skyIrradiance()) / PI;",
     "    col = mix(col, foamCol, m);",
     "  } else {",
@@ -843,21 +914,18 @@
 
   // Terrain: the same camera-centred grid, lifted to the island heightfield at
   // the mip level matching each cell.
-  var VS_TERRAIN = HEAD + C_COMMON + "\n" + [
+  var VS_TERRAIN = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + [
     "in vec2 aPos;",
     "in float aCell;",
     "uniform mat4 uViewProj;",
-    "uniform sampler2D uWorld;",
-    "uniform vec2 uWorldUV0;",
-    "uniform float uWorldInv;",
     "out vec3 vPos;",
     "void main() {",
-    "  float h = textureLod(uWorld, aPos * uWorldInv + uWorldUV0, clamp(log2(aCell / 2.0), 0.0, 8.0)).x;",
+    "  float h = worldAt(aPos, clamp(log2(aCell / 2.0), 0.0, 8.0)).x;",
     "  vPos = vec3(aPos.x, h, aPos.y);",
     "  gl_Position = uViewProj * vec4(vPos, 1.0);",
     "}",
   ].join("\n");
-  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WATER + "\n" + [
+  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_WATER + "\n" + [
     "uniform sampler2D uProbe;",
     "in vec3 vPos;",
     "out vec4 o;",
@@ -875,6 +943,15 @@
     "  vec3 n = groundNormal(P.xz, lod);",
     "  float wet;",
     "  vec3 alb = groundAlbedo(w, wd, n, wet);",
+    // sand the swash just ran over stays dark and glossy for a few seconds
+    "  Surf sw = shoreWave(P.xz, 0.0);",
+    "  if (wd.x > 0.0 && sw.H > 0.0) {",
+    "    float zone = smoothstep(0.12, -0.04, wd.x - 0.55 * sw.H);",
+    "    float fresh = sw.th > 0.0 ? exp(-sw.th * 0.6) : exp(sw.th * 2.0);",
+    "    float wet2 = zone * (0.6 + 0.4 * fresh);",
+    "    alb *= mix(1.0, 0.62, max(wet2 - wet, 0.0));",
+    "    wet = max(wet, wet2);",
+    "  }",
     "  n = sandNormal(w, n, dist, (1.0 - smoothstep(1.5, 4.0, wd.x)) * 0.6);",
     "  float shadow = terrainShadow(P, lod);",
     "  float z = max(-P.y, 0.0);",
@@ -1120,12 +1197,33 @@
     var maxH = 0;
     for (i = 0; i < world.height.length; i++) if (world.height[i] > maxH) maxH = world.height[i];
     this.maxH = maxH + 2;
+    this.shoreTex = this._tex(WN, WN, gl.RGBA16F, gl.LINEAR_MIPMAP_LINEAR, gl.CLAMP_TO_EDGE, true);
+    this.shoreKTex = this._tex(WN, WN, gl.RGBA16F, gl.LINEAR_MIPMAP_LINEAR, gl.CLAMP_TO_EDGE, true);
+    this._uploadShore();
 
     this._buildCausticMesh(384);
     this._buildWaterMesh(this.p.meshDetail);
     this.spectrumDirty = true;
     this.width = 0; this.height = 0;
   }
+
+  // Shore-wave fields for the world's current swell (see world.js).
+  Renderer.prototype._uploadShore = function () {
+    var gl = this.gl, w = this.world, N = w.N;
+    gl.bindTexture(gl.TEXTURE_2D, this.shoreTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, w.shoreTexture(w));
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, this.shoreKTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, w.shoreKTexture(w));
+    gl.generateMipmap(gl.TEXTURE_2D);
+  };
+  // Re-run the shore model for new swell settings (about half a second of CPU).
+  Renderer.prototype.rebuildShore = function () {
+    var w = this.world;
+    if (w.swell === this.p.swell && w.swellDir === this.p.windDir) return;
+    w.setSwell(w, this.p.swell, this.p.windDir);
+    this._uploadShore();
+  };
 
   Renderer.prototype._params = function (filter, wrap) {
     var gl = this.gl;
@@ -1348,6 +1446,8 @@
     var causDepth = 4.5;                       // typical lagoon depth
     var causShift = [sunRefr[0] / -sunRefr[1], sunRefr[2] / -sunRefr[1]];
     this.cloudOff[0] += dt * p.timeScale * 4.0; this.cloudOff[1] += dt * p.timeScale * 2.0;
+    // swell and wave-group phases, wrapped in double precision
+    var T = this.world.SWELL_T, shorePh = mod(TAU * this.time / T, TAU), groupPh = mod(TAU * this.time / (T * this.world.GROUP), TAU);
 
     var common = {
       uCam: cam, uSunDir: sun, uSunCol: sunCol, uTime: this.time,
@@ -1367,6 +1467,8 @@
       uWorldUV0: [(O[0] + this.world.HALF) / this.world.SIZE, (O[1] + this.world.HALF) / this.world.SIZE],
       uOffD: [mod(O[0], 4096), mod(O[1], 4096)],
       uCaustic: this.caustic, uCausL: CAUSTIC_L, uCausDepth: causDepth, uCausStr: p.caustics,
+      uShore: this.shoreTex, uShoreK: this.shoreKTex, uSurf: 1,
+      uShoreWT: [Math.cos(shorePh), Math.sin(shorePh)], uGroupWT: [Math.cos(groupPh), Math.sin(groupPh)],
       uOffC: [mod(O[0], CAUSTIC_L), mod(O[1], CAUSTIC_L)], uCausShift: causShift,
       uProbe: this.probe,
     };

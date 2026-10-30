@@ -391,12 +391,12 @@
     var f = buildFields(terr);
     var t2 = Date.now();
     var w = {
-      N: N, SIZE: SIZE, DX: DX, HALF: HALF, OCEAN_FLOOR: OCEAN_FLOOR, SWELL_T: SWELL_T,
+      N: N, SIZE: SIZE, DX: DX, HALF: HALF, OCEAN_FLOOR: OCEAN_FLOOR, SWELL_T: SWELL_T, GROUP: GROUP,
       height: terr.height, coral: terr.coral, tone: terr.tone, peak: terr.peak,
       sdf: f.sdf, land: f.land, fields: f,
       timings: { terrain: t1 - t0, fields: t2 - t1 },
       // helpers travel with the data so the renderer needs no global
-      heightAt: heightAt, terrainTexture: terrainTexture, shoreTexture: shoreTexture, shoreKTexture: shoreKTexture,
+      heightAt: heightAt, terrainTexture: terrainTexture, shoreTexture: shoreTexture, shoreKTexture: shoreKTexture, setSwell: setSwell,
     };
     setSwell(w, opts.swell == null ? 1.2 : opts.swell, opts.swellDir == null ? 35 : opts.swellDir);
     w.timings.shore = Date.now() - t2;
@@ -427,19 +427,23 @@
     }
     return out;
   }
-  // Wave vector (rad/m) of the shore swell, pointing the way it travels.
+  // Wave vector (rad/m) of the shore swell, pointing the way it travels, and
+  // the phase of the wave-group envelope (sets of bigger waves every sixth
+  // period) as cos/sin.
+  var GROUP = 6;
   function shoreKTexture(w) {
-    var out = new Float32Array(N * N * 2);
+    var out = new Float32Array(N * N * 4), kg = TAU / (SWELL_T * GROUP);
     for (var k = 0; k < N * N; k++) {
       var depth = Math.max(-w.height[k], 0.25), c = w.land[k] ? SWASH_C : phaseSpeed(depth), kk = TAU / (SWELL_T * c);
-      out[2 * k] = w.dirX[k] * kk; out[2 * k + 1] = w.dirZ[k] * kk;
+      out[4 * k] = w.dirX[k] * kk; out[4 * k + 1] = w.dirZ[k] * kk;
+      out[4 * k + 2] = Math.cos(w.arrival[k] * kg); out[4 * k + 3] = Math.sin(w.arrival[k] * kg);
     }
     return out;
   }
 
   return {
     N: N, SIZE: SIZE, DX: DX, HALF: HALF, OCEAN_FLOOR: OCEAN_FLOOR, SWELL_T: SWELL_T, SWASH_C: SWASH_C,
-    WINDWARD: WINDWARD,
+    WINDWARD: WINDWARD, GROUP: GROUP,
     build: build, setSwell: setSwell, heightAt: heightAt, bilinear: bilinear,
     terrainTexture: terrainTexture, shoreTexture: shoreTexture, shoreKTexture: shoreKTexture,
     phaseSpeed: phaseSpeed, shoaling: shoaling, fastSweep: fastSweep, makeNoise: makeNoise, mulberry32: mulberry32,
