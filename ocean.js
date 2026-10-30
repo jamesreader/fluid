@@ -35,8 +35,8 @@
   var FFT_N = 256;
   // Tile sizes (m). L1 = 3 * L2 exactly: the caustics are built from those two
   // cascades, so their sum repeats on the 36 m tile. L0 is incommensurate with
-  // both and long enough to carry a 9.5 s swell, which breaks up repetition.
-  var CASCADE_L = [512, 36, 12];
+  // both, which breaks up repetition at large scale.
+  var CASCADE_L = [233, 36, 12];
   // Cascade c keeps wavenumbers in [CUT[c], CUT[c+1]): each hands over at the
   // next tile's 4th harmonic, so no wave is counted twice and the hand-over
   // band is sampled by >= 10 texels per wavelength on the coarser side.
@@ -50,9 +50,9 @@
     alignment: 1,      // multiplies the directional spreading exponent
     chop: 1.0,         // horizontal displacement (Tessendorf lambda)
     foam: 0.6,
-    swell: 1.6,        // significant height (m) of the ocean swell that surfs the island
-    surf: 1,           // scales the breaking shore waves (0 = off)
-    depth: 40,         // water depth the FFT spectrum is built for (the open sea)
+    surf: 1.6,         // height (m) of the swell that breaks on the reef and beaches
+    swell: 0,          // optional extra long swell in the open-ocean FFT (m)
+    depth: 4.5,        // water depth the FFT spectrum is built for
     clarity: 1,        // >1 clearer, <1 murkier
     caustics: 1,
     sunElev: 52,       // degrees above horizon
@@ -355,9 +355,9 @@
     "}",
     // Surface height above world point xz: invert the horizontal (choppy)
     // displacement by fixed-point iteration, then read the height there.
-    // Long waves feel the bottom first: each cascade fades out below its own
-    // depth (14 m, 4 m, 1.2 m), so the lagoon is glassy and the beach calm.
-    "vec3 depthFade(float depth) { return vec3(sat(depth / 14.0), sat(depth / 4.0), sat((depth + 0.3) / 1.2)); }",
+    // The wind sea dies out in the last couple of metres before the sand (long
+    // cascades first); the lagoon keeps its full chop.
+    "vec3 depthFade(float depth) { return vec3(sat(depth / 3.0), sat(depth / 1.6), sat((depth + 0.2) / 0.7)); }",
     "vec4 oceanDispF(vec2 xz, vec3 lod, vec3 f) {",
     "  return textureLod(uDisp0, (xz + uOff0) / uCascL.x, lod.x) * f.x",
     "       + textureLod(uDisp1, (xz + uOff1) / uCascL.y, lod.y) * f.y",
@@ -900,7 +900,7 @@
     "    vec3 hit = P + T * t;",
     "    float shadow = terrainShadow(P, 0.0) * sunVis(P, 0.002);",
     // a raised crest is a thicker body of water to look through
-    "    float body = max(P.y + 0.25 * sw.H, 0.0) * sat(1.2 - N.y) * 3.0;",
+    "    float body = max(P.y + 0.25 * sw.H, 0.0) * sat(1.2 - N.y) * 3.0 * sat(sw.H * 2.5);",
     "    vec3 refr = throughWater(shadeFloor(hit, dist + t, shadow), t + body, 0.5 * max(-hit.y, 0.0));",
     // the surf zone is milky with stirred-up sand: it catches sun and sky
     // light diffusely, which is what shows the shape of a breaking face
@@ -1082,7 +1082,7 @@
     "    alb = vec3(0.24, 0.25, 0.07);",
     "  } else {",                                   // canopy
     "    alb = mix(vec3(0.035, 0.085, 0.025), vec3(0.10, 0.16, 0.045), vTint);",
-    "    if (vTint > 0.992) alb = vec3(0.30, 0.11, 0.05);",   // the odd flame tree
+    "    if (vTint > 0.996) alb = vec3(0.30, 0.11, 0.05);",   // the odd flame tree
     "    float leaves = vnoise(w * 0.9 + vPos.y * 0.7) * 0.6 + vnoise(w * 3.7) * 0.4;",
     "    alb *= 0.7 + 0.6 * leaves;",
     "    n = normalize(n + 0.35 * vec3(leaves - 0.5, 0.0, vnoise(w * 1.3) - 0.5));",
@@ -1400,8 +1400,8 @@
   // Re-run the shore model for new swell settings (about half a second of CPU).
   Renderer.prototype.rebuildShore = function () {
     var w = this.world;
-    if (w.swell === this.p.swell && w.swellDir === this.p.windDir) return;
-    w.setSwell(w, this.p.swell, this.p.windDir);
+    if (w.swell === this.p.surf && w.swellDir === this.p.windDir) return;
+    w.setSwell(w, this.p.surf, this.p.windDir);
     this._uploadShore();
   };
 
@@ -1729,7 +1729,7 @@
       uWorldUV0: [(O[0] + this.world.HALF) / this.world.SIZE, (O[1] + this.world.HALF) / this.world.SIZE],
       uOffD: [mod(O[0], 4096), mod(O[1], 4096)],
       uCaustic: this.caustic, uCausL: CAUSTIC_L, uCausDepth: causDepth, uCausStr: p.caustics,
-      uShore: this.shoreTex, uShoreK: this.shoreKTex, uSurf: p.surf,
+      uShore: this.shoreTex, uShoreK: this.shoreKTex, uSurf: p.surf > 0 ? 1 : 0,
       uShoreWT: [Math.cos(shorePh), Math.sin(shorePh)], uGroupWT: [Math.cos(groupPh), Math.sin(groupPh)],
       uOffC: [mod(O[0], CAUSTIC_L), mod(O[1], CAUSTIC_L)], uCausShift: causShift,
       uProbe: this.probe,

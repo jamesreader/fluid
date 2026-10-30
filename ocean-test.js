@@ -14,8 +14,8 @@
  *   (c) Hermitian packing: h0 texels carry conj(h0(-k)) of their mirror, so
  *       every field the GPU synthesises is real.
  *   (d) wind sanity: stronger wind or longer fetch makes bigger waves, a
- *       6 m/s breeze stays in the 0.3-0.9 m range, and the swell adds its
- *       energy on top.
+ *       6 m/s breeze stays in the 0.3-0.9 m range, and the optional swell adds
+ *       energy that the grid still integrates correctly.
  *   (e) the island (world.js): one island with a summit and a beach band,
  *       finite shore fields, swell arriving at the surf beach in order, and a
  *       reef that keeps the lagoon calmer than the open surf beach.
@@ -83,10 +83,11 @@ console.log("--- (d) wind sanity ---");
   // wind sea alone (swell 0), then the swell on top
   function hs(o) { return 4 * Math.sqrt(Ocean.spectrumVariance(params(Object.assign({ swell: 0 }, o)))); }
   var base = hs({}), windy = hs({ wind: 12 }), longFetch = hs({ fetch: 150 });
-  var both = hs({ swell: 1.2 }), expect = Math.sqrt(base * base + 1.2 * 1.2);
-  console.log("    with a 1.2 m swell: Hs " + both.toFixed(2) + " m (independent seas: " + expect.toFixed(2) + " m)");
-  if (Math.abs(both / expect - 1) < 0.08) pass("(d) swell adds its energy to the wind sea");
-  else fail("(d) swell + wind sea Hs " + both.toFixed(2) + " m, expected about " + expect.toFixed(2) + " m");
+  // the optional FFT swell (shallow-water TMA damps it at the 4.5 m spectrum depth)
+  var ps = params({ swell: 1.2 }), both = 4 * Math.sqrt(Ocean.spectrumVariance(ps)), expect = 4 * Math.sqrt(Ocean.spectrumM0(ps));
+  console.log("    with a 1.2 m swell: Hs " + both.toFixed(2) + " m (1D integral " + expect.toFixed(2) + " m, wind sea alone " + base.toFixed(2) + " m)");
+  if (Math.abs(both / expect - 1) < 0.05 && both > base * 1.1) pass("(d) the swell adds energy and the grid matches the 1D integral");
+  else fail("(d) swell + wind sea Hs " + both.toFixed(2) + " m vs 1D " + expect.toFixed(2) + " m");
   console.log("    Hs default " + base.toFixed(2) + " m, wind 12 m/s " + windy.toFixed(2) + " m, fetch 150 km " + longFetch.toFixed(2) + " m");
   if (base > 0.3 && base < 0.9) pass("(d) default breeze Hs " + base.toFixed(2) + " m");
   else fail("(d) default Hs " + base.toFixed(2) + " m outside 0.3-0.9 m");

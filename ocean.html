@@ -151,7 +151,7 @@ function lagoonMain() {
 
   var renderer;
   try {
-    var world = World.build({ swell: params.swell, swellDir: params.windDir });
+    var world = World.build({ swell: params.surf, swellDir: params.windDir });
     renderer = new Ocean.Renderer(cv, params, world);
   } catch (e) {
     document.getElementById("msg-text").textContent = e.message + " Try a recent Chrome, Edge, Firefox or Safari.";
@@ -161,8 +161,8 @@ function lagoonMain() {
   }
 
   // ---------------------------------------------------------------- camera
-  // offshore of the surf beach, facing the island with the sun behind
-  var HOME = { pos: [-470, 4, -360], yaw: 0.62, pitch: -0.05 };
+  // in the lagoon, facing the island's peak across clear water
+  var HOME = { pos: [330, 3, 420], yaw: -2.3, pitch: -0.06 };
   var cam = { pos: HOME.pos.slice(), yaw: HOME.yaw, pitch: HOME.pitch, fov: 62 * Math.PI / 180, speed: 4 };
   if (typeof saved.camSpeed === "number") cam.speed = saved.camSpeed;
   if (typeof saved.fov === "number") cam.fov = saved.fov * Math.PI / 180;
@@ -296,7 +296,7 @@ function lagoonMain() {
   // [key, label, min, max, step, unit, decimals, tooltip] or [section title]
   var CONTROLS = [
     ["Waves"],
-    ["swell", "swell", 0, 3, 0.05, " m", 2, "ocean swell height: sets the surf on the reef and the beaches"],
+    ["surf", "surf", 0, 3, 0.05, " m", 2, "height of the swell that breaks on the reef and the beaches"],
     ["wind", "wind", 0.5, 20, 0.5, " m/s", 1, "wind speed at 10 m: raises wave height and period"],
     ["windDir", "wind heading", 0, 355, 5, "°", 0, "direction wind and swell travel toward"],
     ["fetch", "fetch", 1, 300, 1, " km", 0, "open water upwind: longer fetch, longer and bigger waves"],
