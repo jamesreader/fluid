@@ -347,6 +347,7 @@
     "uniform float uTime;",
     "uniform vec3 uGlowCol;",      // plankton light per unit of stirring (0 by day)
     "uniform float uNight;",       // 0 day .. 1 moonlit night
+    "uniform float uCamUnder;",    // 1 when the camera is below the water surface
     "float sat(float x) { return clamp(x, 0.0, 1.0); }",
   ].join("\n");
 
@@ -1085,7 +1086,7 @@
     "  vec4 q = uInvViewProj * vec4(vUv * 2.0 - 1.0, 1.0, 1.0);",
     "  vec3 rd = normalize(q.xyz / q.w - uCam);",
     "  float starPx = max(length(fwidth(rd)) * 260.0 * 0.6, 0.05);",   // a star stays about a pixel wide
-    "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
+    "  bool under = uCamUnder > 0.5;",
     "  vec3 col;",
     "  if (!under) {",
     "    if (rd.y >= 0.0) {",
@@ -1195,8 +1196,9 @@
     // Filtered normals lose slope variance with distance; give it back as roughness.
     "  float rough = clamp(0.045 + 0.05 * log2(1.0 + dist / 25.0), 0.045, 0.32);",
     "  float envLodR = clamp(log2(1.0 + dist / 60.0) * 1.3, 0.0, 5.0);",
-    // seen from below, the surface shows its back face
-    "  bool under = !gl_FrontFacing;",
+    // under water the surface is seen from below (the camera depth, not the
+    // facing: the underside of a folded lip is seen from the air)
+    "  bool under = uCamUnder > 0.5;",
     "  vec3 col;",
     "  if (!under) {",
     "    if (dot(N, V) < 0.02) N = normalize(N + V * (0.02 - dot(N, V)));",
@@ -1301,7 +1303,7 @@
     "  vec3 toEye = uCam - P;",
     "  float dist = length(toEye);",
     "  vec3 V = toEye / dist;",
-    "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
+    "  bool under = uCamUnder > 0.5;",
     // seen from above, anything a metre under water is covered by the surface
     "  if (!under && P.y < -1.0) { o = vec4(0.0); return; }",   // alpha 0: not an object for the water to look through
     "  float lod = clamp(log2(1.0 + dist / 60.0), 0.0, 6.0);",
@@ -1599,7 +1601,7 @@
     "  float z = max(-P.y, 0.0);",
     "  float shadow = terrainShadow(P, 0.0) * sunVis(P + n * 0.05, 0.002);",
     "  vec3 col = lightGround(P, n, alb, z, dist, shadow);",
-    "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
+    "  bool under = uCamUnder > 0.5;",
     // at night, swimmers wear a halo of the plankton they disturb
     "  if (k >= 10 && k <= 12 && uGlowCol.b > 0.0) col += uGlowCol * (0.2 + 1.5 * pow(1.0 - abs(dot(n, toEye)) / dist, 3.0)) * (0.5 + 0.7 * vnoise(vLocal.xz * 9.0 + uTime * 3.0));",
     "  if (under) col = throughWater(col, dist, 0.5 * (max(-uCam.y, 0.0) + z));",
@@ -2890,6 +2892,8 @@
 
     // Ripples, then water height at the camera and the probe points.
     this._readProbes();
+    // under water? (from the probes a frame or two ago; every pass agrees)
+    common.uCamUnder = camera.pos[1] < (this.probeHeights ? this.probeHeights[0] : 0) ? 1 : 0;
     this._stepRipples(dt * p.timeScale, camera.rippleCentre || camera.pos, O, common);
     this._stepSurf(dt * p.timeScale, camera.rippleCentre || camera.pos, O, common);
     this._stepLips(dt * p.timeScale, O, common);
