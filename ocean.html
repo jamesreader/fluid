@@ -35,6 +35,7 @@
   #hud-fps.good { color: var(--good); } #hud-fps.bad { color: var(--bad); }
   #hint { margin-left: auto; color: var(--faint); font-size: 12.5px; }
   .tools { display: flex; gap: 4px; }
+  #ui-compare { text-decoration: none; }
   .tool { font-size: 13px; padding: 3px 9px; }
   #hud-tool[hidden] { display: none; }
   #hint kbd { background: var(--well); border: 1px solid var(--well-line); border-radius: 4px;
@@ -123,6 +124,7 @@
     <button class="tbtn" id="ui-opts" title="options (H) — waves, water, sky, render">⚙</button>
     <button class="tbtn" id="ui-snd" title="sound on/off (M)">sound</button>
     <button class="tbtn" id="ui-fs" title="full screen (F)">⛶</button>
+    <a class="tbtn" id="ui-compare" href="v2/ocean.html" title="open Clear Lagoon II at this exact spot and moment">v2 →</a>
     <div id="hint"></div>
   </div>
   <div id="stage">
@@ -188,6 +190,20 @@ function lagoonMain() {
   if (typeof saved.camSpeed === "number") cam.speed = saved.camSpeed;
   if (typeof saved.fov === "number") cam.fov = saved.fov * Math.PI / 180;
   var cruise = !!saved.cruise;
+  // ?cam=x,y,z,yaw,pitch&t=seconds: arrive where the other version left off
+  (function () {
+    try {
+      var q = new URLSearchParams(location.search), c = (q.get("cam") || "").split(",").map(Number);
+      if (c.length === 5 && c.every(isFinite)) { cam.pos = c.slice(0, 3); cam.yaw = c[3]; cam.pitch = c[4]; }
+      var tq = +q.get("t");
+      if (tq > 0 && isFinite(tq)) renderer.time = tq;
+    } catch (e) {}
+  })();
+  document.getElementById("ui-compare").addEventListener("click", function (e) {
+    e.preventDefault();
+    var c = cam.pos.concat([cam.yaw, cam.pitch]).map(function (v) { return v.toFixed(3); }).join(",");
+    location.href = this.getAttribute("href") + "?cam=" + c + "&t=" + renderer.time.toFixed(2);
+  });
   function fwd() {
     return [Math.cos(cam.pitch) * Math.cos(cam.yaw), Math.sin(cam.pitch), Math.cos(cam.pitch) * Math.sin(cam.yaw)];
   }

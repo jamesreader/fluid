@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<title>Clear Lagoon II</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="manifest" href="../manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="../icons/icon-192.png">
+<style>
+  /* Full-bleed WebGL view under the same dark HUD chrome as SPH Liquid:
+     a top bar of chips, a right-edge slide-out panel, nothing else. */
+  :root {
+    --bg: #0b0f14; --bar: #10161d; --line: #1e2a35; --chip: #16202b; --chip-line: #24333f;
+    --well: #1c2733; --well-line: #2c3d4b; --fg: #cfd8e3; --muted: #8fa3b5; --faint: #6d7f8f;
+    --accent: #7fd1ff; --on-accent: #0b0f14; --panel: rgba(13, 19, 26, 0.93); --good: #7fe08a; --bad: #ff9d6b;
+    --track: #24303e; --switch-on: #1d5e8a; --switch-on-line: #2f7fb8; --btn-fg: #9fd1ff;
+    --tip: rgba(11, 15, 20, 0.72);
+    color-scheme: dark;
+  }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #wrap { display: flex; flex-direction: column; height: 100%; }
+  #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+         padding-block: 8px; padding-left: max(16px, env(safe-area-inset-left, 0px));
+         padding-right: max(16px, env(safe-area-inset-right, 0px));
+         background: var(--bar); border-bottom: 1px solid var(--line); }
+  #bar b { color: var(--accent); }
+  .chip { background: var(--chip); border: 1px solid var(--chip-line); border-radius: 6px;
+          padding: 4px 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .chip span { color: var(--muted); }
+  #hud-fps { min-width: 96px; text-align: right; }
+  #hud-fps.good { color: var(--good); } #hud-fps.bad { color: var(--bad); }
+  #hint { margin-left: auto; color: var(--faint); font-size: 12.5px; }
+  .tools { display: flex; gap: 4px; }
+  #ui-compare { text-decoration: none; }
+  .tool { font-size: 13px; padding: 3px 9px; }
+  #hud-tool[hidden] { display: none; }
+  #hint kbd { background: var(--well); border: 1px solid var(--well-line); border-radius: 4px;
+              padding: 1px 5px; font-size: 11px; font-family: inherit; }
+  #stage { position: relative; flex: 1; overflow: hidden; min-height: 0; }
+  #cv { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+  #cv.looking { cursor: none; }
+  .tbtn { background: var(--chip); border: 1px solid var(--chip-line); border-radius: 6px;
+          color: var(--accent); padding: 3px 11px; font: inherit; cursor: pointer; }
+  .tbtn:hover { background: var(--well); }
+  .tbtn.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .tbtn:focus-visible, #panel :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+         padding: 24px; text-align: center; color: var(--muted); background: var(--bg); }
+  #msg p { max-width: 34em; }
+  #look-tip { position: absolute; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+              transform: translateX(-50%); background: var(--tip); color: var(--fg);
+              border: 1px solid var(--chip-line); border-radius: 6px; padding: 6px 12px;
+              font-size: 13px; pointer-events: none; transition: opacity .4s; }
+  /* ------------------------------------------------------- options panel */
+  #panel { position: absolute; top: 0; right: 0; bottom: 0; width: 262px;
+           background: var(--panel); border-left: 1px solid var(--line);
+           padding: 12px calc(14px + env(safe-area-inset-right, 0px)) 20px 14px;
+           overflow-y: auto; z-index: 5;
+           transform: translateX(102%); transition: transform .16s ease; }
+  #panel.open { transform: none; }
+  #panel h3 { margin: 15px 0 5px; font-size: 11px; letter-spacing: .08em;
+              text-transform: uppercase; color: var(--faint); font-weight: 600; }
+  #panel h3:first-child { margin-top: 0; }
+  .prow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 7px 0; }
+  .prow label, .prow span { color: var(--muted); white-space: nowrap; }
+  .prow output { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 54px; text-align: right; }
+  .prow input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .prow input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; flex: none; cursor: pointer; margin: 0;
+    width: 40px; height: 23px; border-radius: 12px; position: relative;
+    background: var(--track); border: 1px solid var(--well-line); transition: background .15s, border-color .15s;
+  }
+  .prow input[type="checkbox"]::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px;
+    border-radius: 50%; background: var(--muted); transition: left .15s, background .15s;
+  }
+  .prow input[type="checkbox"]:checked { background: var(--switch-on); border-color: var(--switch-on-line); }
+  .prow input[type="checkbox"]:checked::after { left: 19px; background: var(--accent); }
+  .prow button { background: var(--well); color: var(--btn-fg); border: 1px solid var(--well-line);
+                 border-radius: 4px; padding: 2px 9px; font: inherit; cursor: pointer; }
+  .prow button:hover { background: var(--track); }
+  .prow select { background: var(--well); color: var(--fg); border: 1px solid var(--well-line);
+                 border-radius: 4px; padding: 2px 5px; font: inherit; }
+  #panel a { color: var(--accent); }
+  #panel .note { color: var(--faint); font-size: 12px; margin: 4px 0 0; }
+  @media (pointer: coarse) {
+    body { font-size: 16px; }
+    .chip { padding: 8px 12px; }
+    .tbtn { padding: 8px 18px; font-size: 20px; min-height: 42px; }
+    #hint { display: none; }
+    #panel { width: 304px; font-size: 16px; }
+    .prow { margin: 15px 0; gap: 12px; }
+    .prow input[type="range"] { height: 36px; }
+    .prow button, .prow select { min-height: 44px; font-size: 16px; padding: 8px 14px; }
+    .prow input[type="checkbox"] { width: 52px; height: 30px; border-radius: 16px; }
+    .prow input[type="checkbox"]::after { width: 24px; height: 24px; top: 3px; left: 3px; }
+    .prow input[type="checkbox"]:checked::after { left: 24px; }
+  }
+  @media (max-width: 560px) { .chip.wide { display: none; } }
+  @media (prefers-reduced-motion: reduce) { #panel, #look-tip { transition: none; } }
+  body.fs #bar, body.fs #panel, body.fs #look-tip { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <b>Clear Lagoon II</b>
+    <div class="chip" id="hud-fps">-- fps</div>
+    <div class="chip"><span>waves H<sub>s</sub></span> <span id="hud-hs">--</span></div>
+    <div class="chip wide"><span>altitude</span> <span id="hud-alt">--</span></div>
+    <div class="chip wide"><span>floor</span> <span id="hud-floor">--</span></div>
+    <div class="chip wide"><span>paused</span> <span id="hud-pause">no</span></div>
+    <div class="tools" role="group" aria-label="tools">
+      <button class="tbtn tool on" data-tool="fly" title="1: fly around (WASD, mouse look)">fly</button>
+      <button class="tbtn tool" data-tool="touch" title="2: drag through the water with your hand">touch</button>
+      <button class="tbtn tool" data-tool="throw" title="3: click to throw; X picks what">throw</button>
+      <button class="tbtn tool" data-tool="boat" title="4: drive the boat (W/S throttle, A/D steer)">boat</button>
+    </div>
+    <div class="chip" id="hud-tool"><span>throw</span> <span id="hud-item">beach ball</span></div>
+    <button class="tbtn" id="ui-opts" title="options (H) — waves, water, sky, render">⚙</button>
+    <button class="tbtn" id="ui-snd" title="sound on/off (M)">sound</button>
+    <button class="tbtn" id="ui-fs" title="full screen (F)">⛶</button>
+    <a class="tbtn" id="ui-compare" href="../ocean.html" title="open the original Clear Lagoon at this exact spot and moment">← v1</a>
+    <div id="hint"></div>
+  </div>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="look-tip">Drag to look around. Click for mouse look, WASD to fly.</div>
+    <aside id="panel" aria-label="ocean settings"></aside>
+    <div id="msg" hidden><p id="msg-text"></p></div>
+  </div>
+</div>
+
+<script src="world.js?v=@@VER@@"></script>
+<script src="life.js?v=@@VER@@"></script>
+<script src="play.js?v=@@VER@@"></script>
+<script src="sound.js?v=@@VER@@"></script>
+<script src="ocean.js?v=@@VER@@"></script>
+<script>
+"use strict";
+// ===========================================================================
+// Camera, input, settings panel and the frame loop. The island is generated
+// by world.js; the ocean (waves, sky, terrain, caustics) lives in ocean.js.
+// ===========================================================================
+function lagoonMain() {
+  var cv = document.getElementById("cv");
+  var panel = document.getElementById("panel");
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  var coarse = window.matchMedia && matchMedia("(pointer: coarse)").matches;
+
+  // ------------------------------------------------------- user options store
+  var OPT_KEY = "lagoon2-opts-1";
+  function loadOpts() { try { return JSON.parse(localStorage.getItem(OPT_KEY)) || {}; } catch (e) { return {}; } }
+  function saveOpts(o) { try { localStorage.setItem(OPT_KEY, JSON.stringify(o)); } catch (e) {} }
+  var saved = loadOpts();
+  var defaults = Object.assign({}, Ocean.DEFAULTS, coarse ? { renderScale: 0.7, meshDetail: 256 } : {});
+  var params = Object.assign({}, defaults);
+  Object.keys(saved).forEach(function (k) { if (k in params && typeof saved[k] === typeof params[k]) params[k] = saved[k]; });
+
+  var renderer;
+  try {
+    var world = World.build({ swell: params.surf, swellDir: params.windDir });
+    var life = new Life.Ecosystem(world, 7);
+    renderer = new Ocean.Renderer(cv, params, world, { life: life });
+    life.ground = function (x, z) { return renderer.reefGround(x, z, cam ? cam.pos : null); };
+    var play = new Play.Playground(world, function (x, z) { return renderer.reefGround(x, z, cam ? cam.pos : null); });
+    var ball = Play.sphereMesh(12, 20, 1), nut = Play.sphereMesh(8, 12, 1.2);
+    ["ball", "coconut", "rock"].forEach(function (name, i) {
+      renderer.addDynamicKind(name, name === "coconut" ? nut : ball, Play.KINDS[i].code, Play.MAX_OBJ);
+      renderer.setDynamic(name, function (out, O) { return play.writeObjects(i, out, O); });
+    });
+    renderer.addDynamicKind("boat", Play.boatMesh(), 23, 1);
+    renderer.setDynamic("boat", function (out, O) { return play.writeBoat(out, O); });
+    renderer.setSpray(function (out, O) { return play.writeSpray(out, O); });
+  } catch (e) {
+    document.getElementById("msg-text").textContent = e.message + " Try a recent Chrome, Edge, Firefox or Safari.";
+    document.getElementById("msg").hidden = false;
+    console.error(e);
+    return;
+  }
+
+  // ---------------------------------------------------------------- camera
+  // in the lagoon, facing the island's peak across clear water
+  var HOME = { pos: [330, 3, 420], yaw: -2.3, pitch: -0.06 };
+  var cam = { pos: HOME.pos.slice(), yaw: HOME.yaw, pitch: HOME.pitch, fov: 62 * Math.PI / 180, speed: 4 };
+  if (typeof saved.camSpeed === "number") cam.speed = saved.camSpeed;
+  if (typeof saved.fov === "number") cam.fov = saved.fov * Math.PI / 180;
+  var cruise = !!saved.cruise;
+  // ?cam=x,y,z,yaw,pitch&t=seconds: arrive where the other version left off
+  (function () {
+    try {
+      var q = new URLSearchParams(location.search), c = (q.get("cam") || "").split(",").map(Number);
+      if (c.length === 5 && c.every(isFinite)) { cam.pos = c.slice(0, 3); cam.yaw = c[3]; cam.pitch = c[4]; }
+      var tq = +q.get("t");
+      if (tq > 0 && isFinite(tq)) renderer.time = tq;
+    } catch (e) {}
+  })();
+  document.getElementById("ui-compare").addEventListener("click", function (e) {
+    e.preventDefault();
+    var c = cam.pos.concat([cam.yaw, cam.pitch]).map(function (v) { return v.toFixed(3); }).join(",");
+    location.href = this.getAttribute("href") + "?cam=" + c + "&t=" + renderer.time.toFixed(2);
+  });
+  function fwd() {
+    return [Math.cos(cam.pitch) * Math.cos(cam.yaw), Math.sin(cam.pitch), Math.cos(cam.pitch) * Math.sin(cam.yaw)];
+  }
+  function look(dx, dy) {
+    if (tool === "boat" && play && play.boat) {
+      orbit.yaw += dx * 0.005;
+      orbit.pitch = Math.max(-0.1, Math.min(1.2, orbit.pitch + dy * 0.004));
+      hideTip();
+      return;
+    }
+    cam.yaw += dx * 0.0032 * (cam.fov / 1.08);
+    cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - dy * 0.0032 * (cam.fov / 1.08)));
+    hideTip();
+  }
+
+  // ------------------------------------------------------------- keyboard
+  var keys = {};
+  window.addEventListener("keydown", function (e) {
+    // Form controls keep their own keys (arrows move sliders); clicking the
+    // view hands the keyboard back to the camera.
+    if (e.target && /INPUT|SELECT|TEXTAREA|BUTTON/.test(e.target.tagName)) return;
+    var k = e.key.toLowerCase();
+    keys[e.code] = true;
+    if (k >= "1" && k <= "4") { setTool(["fly", "touch", "throw", "boat"][+k - 1]); return; }
+    if (k === "x") { throwKind = (throwKind + 1) % Play.KINDS.length; syncTool(); return; }
+    if (k === "m") { toggleSound(); return; }
+    if (k === "h" || k === "o") { togglePanel(); e.preventDefault(); }
+    else if (k === "p") { setPaused(!paused); }
+    else if (k === "f") { toggleFullscreen(); }
+    else if (k === "r") { if (tool === "boat" && play.boat) respawnBoat(); else resetView(); }
+    if (e.code === "Space" || e.code.indexOf("Arrow") === 0) e.preventDefault();
+  });
+  window.addEventListener("keyup", function (e) { keys[e.code] = false; });
+  // a clicked button would keep focus and swallow WASD / Space
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest && e.target.closest("button");
+    if (b) b.blur();
+  });
+  window.addEventListener("blur", function () { keys = {}; });
+
+  // --------------------------------------------- mouse: drag or pointer lock
+  var drag = null, moved = 0;
+  function locked() { return document.pointerLockElement === cv; }
+  cv.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  cv.addEventListener("pointerdown", function (e) {
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    if (e.pointerType === "touch") return;
+    if (locked()) { if (tool === "throw") throwAt(null); return; }
+    // touch tool: the left button is your hand in the water; right-drag looks
+    var handDown = tool === "touch" && e.button === 0;
+    drag = { x: e.clientX, y: e.clientY, hand: handDown }; moved = 0;
+    if (handDown) handStart(e.clientX, e.clientY);
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  cv.addEventListener("pointermove", function (e) {
+    if (e.pointerType === "touch") return;
+    if (locked()) { look(e.movementX, e.movementY); return; }
+    if (!drag) { if (tool === "touch") hover = [e.clientX, e.clientY]; return; }
+    var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    moved += Math.abs(dx) + Math.abs(dy);
+    drag.x = e.clientX; drag.y = e.clientY;
+    if (drag.hand) handMove(e.clientX, e.clientY);
+    else look(dx, dy);
+  });
+  cv.addEventListener("pointerup", function (e) {
+    if (e.pointerType === "touch" || !drag) return;
+    var click = moved < 4, wasHand = drag.hand;
+    drag = null;
+    if (wasHand) { hand = null; return; }
+    if (!click) return;
+    if (tool === "throw") { throwAt([e.clientX, e.clientY]); return; }
+    // in fly mode a click asks for mouse look; Esc gives the cursor back
+    if (tool === "fly" && cv.requestPointerLock) {
+      try { var pr = cv.requestPointerLock(); if (pr && pr.catch) pr.catch(function () {}); } catch (err) {}
+    }
+  });
+  document.addEventListener("pointerlockchange", function () { cv.classList.toggle("looking", locked()); });
+  cv.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    var d = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    cam.speed = Math.max(0.5, Math.min(400, cam.speed * Math.exp(-d * 0.0015)));
+    syncSpeed(); store();
+  }, { passive: false });
+
+  // ------------------------------------------- touch: one finger looks, two fly
+  var touches = {};
+  var pinch = null;
+  function touchList() { return Object.keys(touches).map(function (k) { return touches[k]; }); }
+  cv.addEventListener("pointerdown", function (e) {
+    if (e.pointerType !== "touch") return;
+    touches[e.pointerId] = { x: e.clientX, y: e.clientY, moved: 0 };
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+    pinch = null;
+    if (touchList().length > 1) touchList().forEach(function (q) { q.moved = Infinity; });   // a gesture, not a tap
+    if (tool === "touch" && touchList().length === 1) handStart(e.clientX, e.clientY);
+  });
+  cv.addEventListener("pointermove", function (e) {
+    if (e.pointerType !== "touch" || !touches[e.pointerId]) return;
+    var t = touches[e.pointerId], dx = e.clientX - t.x, dy = e.clientY - t.y;
+    t.x = e.clientX; t.y = e.clientY;
+    var list = touchList();
+    if (list.length === 1) {
+      if (tool === "touch") { handMove(e.clientX, e.clientY); return; }
+      if (tool === "boat" && play.boat) { stick = [clamp(stick[0] + dx * 0.012, -1, 1), clamp(stick[1] - dy * 0.012, -1, 1)]; return; }
+      look(-dx * 1.2, -dy * 1.2); t.moved = (t.moved || 0) + Math.abs(dx) + Math.abs(dy); return;
+    }
+    if (list.length >= 2) {
+      var a = list[0], b = list[1];
+      var mid = [(a.x + b.x) / 2, (a.y + b.y) / 2], span = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinch) {
+        // two-finger drag flies forward/back and sideways, pinch climbs or dives
+        var s = cam.speed * 0.012;
+        var fx = Math.cos(cam.yaw), fz = Math.sin(cam.yaw);
+        var dmx = mid[0] - pinch.mid[0], dmy = mid[1] - pinch.mid[1];
+        cam.pos[0] += (fx * dmy + fz * dmx) * s;
+        cam.pos[2] += (fz * dmy - fx * dmx) * s;
+        cam.pos[1] += (span - pinch.span) * s * 0.6;
+      }
+      pinch = { mid: mid, span: span };
+      hideTip();
+    }
+  });
+  function endTouch(e) {
+    if (e.pointerType !== "touch") return;
+    var t = touches[e.pointerId];
+    if (t && tool === "throw" && t.moved < 8 && touchList().length === 1) throwAt([t.x, t.y]);
+    delete touches[e.pointerId]; pinch = null; hand = null; stick = [0, 0];
+  }
+  cv.addEventListener("pointerup", endTouch);
+  cv.addEventListener("pointercancel", endTouch);
+
+  var tip = document.getElementById("look-tip"), tipShown = true;
+  if (coarse) tip.textContent = "Drag to look. Two fingers: drag to fly, pinch to climb or dive.";
+  function hideTip() { if (tipShown) { tipShown = false; tip.style.opacity = "0"; } }
+
+  function resetView() {
+    cam.pos = HOME.pos.slice(); cam.yaw = HOME.yaw; cam.pitch = HOME.pitch;
+  }
+  function clamp(x, a, b) { return x < a ? a : x > b ? b : x; }
+
+  // ------------------------------------------------------------- tools
+  var tool = "fly", throwKind = 0, hand = null, hover = null, stick = [0, 0];
+  var orbit = { yaw: 0, pitch: 0.2 }, hint = document.getElementById("hint");
+  var HINTS = {
+    fly: "<kbd>click</kbd> mouse look &nbsp; <kbd>WASD</kbd> move &nbsp; <kbd>Space</kbd>/<kbd>E</kbd> up &nbsp; <kbd>Q</kbd>/<kbd>C</kbd> down &nbsp; <kbd>Shift</kbd> fast &nbsp; <kbd>1-4</kbd> tools &nbsp; <kbd>H</kbd> panel",
+    touch: "<kbd>drag</kbd> through the water &nbsp; <kbd>right-drag</kbd> look &nbsp; <kbd>WASD</kbd> move &nbsp; <kbd>1-4</kbd> tools",
+    throw: "<kbd>click</kbd> throw &nbsp; <kbd>X</kbd> beach ball / coconut / rock &nbsp; <kbd>drag</kbd> look &nbsp; <kbd>WASD</kbd> move",
+    boat: "<kbd>W</kbd>/<kbd>S</kbd> throttle &nbsp; <kbd>A</kbd>/<kbd>D</kbd> steer &nbsp; <kbd>drag</kbd> look around &nbsp; <kbd>R</kbd> new boat &nbsp; <kbd>1</kbd> get out",
+  };
+  var toolBtns = Array.prototype.slice.call(document.querySelectorAll(".tool"));
+  toolBtns.forEach(function (b) { b.addEventListener("click", function () { setTool(b.getAttribute("data-tool")); }); });
+  function setTool(t) {
+    if (t === tool) return;
+    if (document.pointerLockElement && t !== "fly" && t !== "throw") document.exitPointerLock();
+    tool = t; hand = null;
+    if (t === "boat" && !play.boat) respawnBoat();
+    if (t !== "boat" && play.boat) { play.boat.throttle = 0; play.boat.steer = 0; }
+    syncTool(); hideTip();
+  }
+  function syncTool() {
+    toolBtns.forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-tool") === tool); });
+    document.getElementById("hud-tool").hidden = tool !== "throw" && tool !== "boat";
+    document.getElementById("hud-tool").firstChild.textContent = tool === "boat" ? "boat" : "throw";
+    hint.innerHTML = HINTS[tool];
+  }
+  // A boat on deep enough water near the camera, pointing where you look.
+  function respawnBoat() {
+    var best = null;
+    for (var r = 6; r < 200 && !best; r += 6) for (var a = 0; a < 16; a++) {
+      var ang = cam.yaw + a / 16 * Math.PI * 2, x = cam.pos[0] + Math.cos(ang) * r, z = cam.pos[2] + Math.sin(ang) * r;
+      if (renderer.groundHeightAt(x, z) < -1.6) { best = [x, z]; break; }
+    }
+    if (!best) best = [cam.pos[0], cam.pos[2]];
+    play.spawnBoat(best[0], best[1], cam.yaw);
+    orbit.yaw = 0; orbit.pitch = 0.2;
+  }
+  // World ray through a screen point (client px), or the view centre.
+  function screenRay(px) {
+    var f = fwd(), rx = -f[2], rz = f[0], rl = Math.hypot(rx, rz) || 1;
+    var right = [rx / rl, 0, rz / rl], up = [right[1] * f[2] - right[2] * f[1], right[2] * f[0] - right[0] * f[2], right[0] * f[1] - right[1] * f[0]];
+    var nx = 0, ny = 0;
+    if (px) { var rc = cv.getBoundingClientRect(); nx = (px[0] - rc.left) / rc.width * 2 - 1; ny = 1 - (px[1] - rc.top) / rc.height * 2; }
+    var ty = Math.tan(cam.fov / 2), tx = ty * cv.clientWidth / Math.max(cv.clientHeight, 1);
+    var d = [f[0] + right[0] * nx * tx + up[0] * ny * ty, f[1] + right[1] * nx * tx + up[1] * ny * ty, f[2] + right[2] * nx * tx + up[2] * ny * ty];
+    var l = Math.hypot(d[0], d[1], d[2]);
+    return [d[0] / l, d[1] / l, d[2] / l];
+  }
+  function waterHit(px) {
+    var d = screenRay(px), o = cam.pos;
+    if (Math.abs(d[1]) < 1e-3) return null;
+    var t = -o[1] / d[1];
+    if (t <= 0 || t > 80) return null;
+    return [o[0] + d[0] * t, o[2] + d[2] * t];
+  }
+  function handStart(x, y) {
+    var h = waterHit([x, y]);
+    hand = h ? { p: h, t: performance.now() } : null;
+    if (h && renderer.groundHeightAt(h[0], h[1]) < -0.1) { play.drop(h[0], h[1], 0.35, -0.9, 0.3); play.splash(h[0], 0, h[1], 0.12, 1.5); }
+  }
+  function handMove(x, y) {
+    var h = waterHit([x, y]), now = performance.now();
+    if (!h) return;
+    if (hand) {
+      // stroke through the water: a trail of pushes, harder the faster you move
+      var dx = h[0] - hand.p[0], dz = h[1] - hand.p[1], dist = Math.hypot(dx, dz), dtm = Math.max((now - hand.t) / 1000, 1 / 120);
+      var sp = Math.min(dist / dtm, 12), n = Math.min(Math.ceil(dist / 0.3), 6);
+      for (var i = 1; i <= n; i++) {
+        var t = i / n;
+        play.drop(hand.p[0] + dx * t, hand.p[1] + dz * t, 0.32, -Math.min(0.05 + sp * 0.06, 0.9) / n * 2, Math.min(sp * 0.04, 0.5) / n * 2);
+      }
+      if (sp > 4 && Math.random() < 0.6) play.emit(h[0], 0.05, h[1], dx / dtm * 0.3, 1 + Math.random() * 2, dz / dtm * 0.3, 0.05, 0.6);
+    }
+    hand = { p: h, t: now };
+  }
+  function throwAt(px) {
+    var d = screenRay(px), K = Play.KINDS[throwKind], speed = K.density > 1000 ? 17 : 14;
+    var o = [cam.pos[0] + d[0] * 0.8, cam.pos[1] + d[1] * 0.8 - 0.2, cam.pos[2] + d[2] * 0.8];
+    play.throwObject(throwKind, o, [d[0] * speed, d[1] * speed + 2.5, d[2] * speed]);
+    hideTip();
+  }
+  // ------------------------------------------------------------- sound
+  var snd = new Sound.Soundscape(), sndBtn = document.getElementById("ui-snd"), sndTimer = 0, sndState = { surf: 0, crash: 0, wind: 0, under: false, engine: null };
+  function toggleSound() {
+    if (snd.on) snd.stop(); else snd.start();
+    sndBtn.classList.toggle("on", snd.on);
+    var o = loadOpts(); o.sound = snd.on; saveOpts(o);
+  }
+  sndBtn.addEventListener("click", toggleSound);
+  // remembered "on": starts with the first click or key (browsers need a gesture)
+  if (saved.sound) {
+    var wake = function (e) {
+      if (e.target === sndBtn || (e.key && e.key.toLowerCase() === "m")) return;   // that gesture toggles it itself
+      if (!snd.on) { snd.start(); sndBtn.classList.add("on"); }
+      window.removeEventListener("pointerdown", wake, true); window.removeEventListener("keydown", wake, true);
+    };
+    window.addEventListener("pointerdown", wake, true); window.addEventListener("keydown", wake, true);
+  }
+  // How loud the surf is here: breaking water near the camera, and how much
+  // of it is crashing right now (lips at phase ~0).
+  function listen() {
+    var w = world, c = cam.pos, T = w.SWELL_T, om = 2 * Math.PI / T, og = om / w.GROUP, t = renderer.time;
+    var roar = 0, crash = 0, h = Math.max(c[1], 0);
+    for (var i = 0; i < 220; i++) {
+      var a = Math.random() * 2 * Math.PI, r = 4 + 150 * Math.random() * Math.random();
+      var x = c[0] + Math.cos(a) * r, z = c[2] + Math.sin(a) * r;
+      var st = w.bilinear(w.stage, x, z, 0);
+      if (st < 0.9) continue;
+      var A = w.bilinear(w.arrival, x, z, 0), th = ((om * (t - A)) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+      var H = w.bilinear(w.waveH, x, z, 0) * (0.72 + 0.28 * Math.cos(og * (t - A)));
+      var d = Math.hypot(r, h), wgt = H * 40 / (40 + d * d / 30) * r / 60;
+      roar += wgt * (st > 1.05 ? 1 : 0.3);
+      if (st < 1.45 && th > -0.05 && th < 0.35) crash += wgt * 2;
+    }
+    sndState.surf = Math.min(1, roar / 18);
+    sndState.crash = Math.min(1, crash / 8);
+    sndState.wind = Math.min(1, params.wind / 14 + h / 300);
+    var probe = renderer.probeResults();
+    sndState.under = probe ? c[1] < probe[0] : c[1] < 0;
+    var b = play.boat;
+    sndState.engine = b ? { throttle: b.throttle, speed: Math.hypot(b.vel[0], b.vel[2]), dist: Math.hypot(b.pos[0] - c[0], b.pos[1] - c[1], b.pos[2] - c[2]) } : null;
+    snd.update(sndState);
+  }
+
+  // Boat controls and the chase camera that follows it.
+  function driveBoat(dt) {
+    var b = play.boat;
+    var thr = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 0.6 : 0) + stick[1];
+    var st = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0) + stick[0];
+    b.throttle += (clamp(thr, -0.6, 1) - b.throttle) * Math.min(1, 2.5 * dt);
+    b.steer += (clamp(st, -1, 1) - b.steer) * Math.min(1, 4 * dt);
+    var ya = b.hdg + orbit.yaw, dist = 9.5, h = 2.4 + dist * Math.sin(orbit.pitch);
+    var want = [b.pos[0] - Math.cos(ya) * dist * Math.cos(orbit.pitch), b.pos[1] + h, b.pos[2] - Math.sin(ya) * dist * Math.cos(orbit.pitch)];
+    var k = 1 - Math.exp(-5 * dt);
+    for (var i = 0; i < 3; i++) cam.pos[i] += (want[i] - cam.pos[i]) * k;
+    cam.pos[1] = Math.max(cam.pos[1], renderer.groundHeightAt(cam.pos[0], cam.pos[2]) + 0.6, 0.6);
+    var tx = b.pos[0] + Math.cos(b.hdg) * 3 - cam.pos[0], ty = b.pos[1] + 0.8 - cam.pos[1], tz = b.pos[2] + Math.sin(b.hdg) * 3 - cam.pos[2];
+    cam.yaw = Math.atan2(tz, tx); cam.pitch = Math.atan2(ty, Math.hypot(tx, tz));
+  }
+
+  function moveCamera(dt) {
+    if (tool === "boat" && play.boat) { driveBoat(dt); return; }
+    var fast = keys.ShiftLeft || keys.ShiftRight ? 4 : 1;
+    var v = cam.speed * fast * dt;
+    var fx = Math.cos(cam.yaw), fz = Math.sin(cam.yaw), f = fwd();
+    var mx = 0, my = 0, mz = 0;
+    if (keys.KeyW || keys.ArrowUp) { mx += f[0]; my += f[1]; mz += f[2]; }
+    if (keys.KeyS || keys.ArrowDown) { mx -= f[0]; my -= f[1]; mz -= f[2]; }
+    if (keys.KeyD || keys.ArrowRight) { mx -= fz; mz += fx; }
+    if (keys.KeyA || keys.ArrowLeft) { mx += fz; mz -= fx; }
+    if (keys.Space || keys.KeyE) my += 1;
+    if (keys.KeyQ || keys.KeyC) my -= 1;
+    if (cruise) { mx += fx * 0.6; mz += fz * 0.6; }
+    cam.pos[0] += mx * v; cam.pos[1] += my * v; cam.pos[2] += mz * v;
+    if (mx || my || mz) hideTip();
+    // keep the eye above the ground and below the clouds
+    var floor = renderer.groundHeightAt(cam.pos[0], cam.pos[2]) + 0.4;
+    cam.pos[1] = Math.max(floor, Math.min(1400, cam.pos[1]));
+  }
+
+  // ------------------------------------------------------------ the panel
+  // [key, label, min, max, step, unit, decimals, tooltip] or [section title]
+  var CONTROLS = [
+    ["Waves"],
+    ["surf", "surf", 0, 3, 0.05, " m", 2, "height of the swell that breaks on the reef and the beaches"],
+    ["wind", "wind", 0.5, 20, 0.5, " m/s", 1, "wind speed at 10 m: raises wave height and period"],
+    ["windDir", "wind heading", 0, 355, 5, "°", 0, "direction wind and swell travel toward"],
+    ["fetch", "fetch", 1, 300, 1, " km", 0, "open water upwind: longer fetch, longer and bigger waves"],
+    ["alignment", "alignment", 0.25, 4, 0.05, "×", 2, "how closely waves follow the wind (low = confused sea)"],
+    ["chop", "choppiness", 0, 1.8, 0.05, "", 2, "sharpens crests by pulling the surface toward them"],
+    ["foam", "foam", 0, 1, 0.05, "", 2, "whitecaps where crests fold over"],
+    ["timeScale", "time", 0, 2, 0.05, "×", 2, "simulation speed"],
+    ["Water"],
+    ["clarity", "clarity", 0.3, 3, 0.05, "×", 2, "1 = clear tropical lagoon; lower is murkier"],
+    ["caustics", "caustics", 0, 2, 0.05, "×", 2, "strength of the light network on the sand"],
+    ["Sky"],
+    ["sunElev", "sun height", 2, 89, 1, "°", 0, "sun elevation above the horizon"],
+    ["sunAzim", "sun bearing", 0, 358, 2, "°", 0, "sun direction around the horizon"],
+    ["clouds", "clouds", 0, 1, 0.05, "", 2, "cumulus cover"],
+    ["Render"],
+    ["exposure", "exposure", 0.1, 2, 0.01, "", 2, ""],
+    ["renderScale", "resolution", 0.35, 1, 0.05, "×", 2, "fraction of screen pixels rendered; lower is faster"],
+  ];
+  var widgets = {}, shoreTimer = 0;
+  function fmt(c, v) { return (+v).toFixed(c[6]) + c[5]; }
+  function row(html) { var d = document.createElement("div"); d.className = "prow"; d.innerHTML = html; panel.appendChild(d); return d; }
+  CONTROLS.forEach(function (c) {
+    if (c.length === 1) { var h = document.createElement("h3"); h.textContent = c[0]; panel.appendChild(h); return; }
+    var id = "ui-" + c[0];
+    var d = row('<label for="' + id + '"></label><input type="range" id="' + id + '"><output></output>');
+    d.querySelector("label").textContent = c[1];
+    var inp = d.querySelector("input"), out = d.querySelector("output");
+    inp.min = c[2]; inp.max = c[3]; inp.step = c[4]; inp.title = c[7];
+    inp.addEventListener("input", function () {
+      var o = {}; o[c[0]] = +inp.value;
+      renderer.setParams(o); params[c[0]] = +inp.value;
+      out.textContent = fmt(c, inp.value); store();
+      // the shore waves are solved on the CPU (~0.5 s): wait for the slider to settle
+      if (c[0] === "surf" || c[0] === "windDir") { clearTimeout(shoreTimer); shoreTimer = setTimeout(function () { renderer.rebuildShore(); }, 350); }
+    });
+    widgets[c[0]] = { inp: inp, out: out, c: c };
+  });
+  var meshRow = row('<label for="ui-mesh">mesh detail</label><select id="ui-mesh" title="vertices per side of the water grid"><option>192</option><option>256</option><option>384</option><option>512</option></select>');
+  var meshSel = meshRow.querySelector("select");
+  meshSel.addEventListener("change", function () { params.meshDetail = +meshSel.value; renderer.setParams({ meshDetail: params.meshDetail }); store(); });
+  var bloomRow = row('<label for="ui-bloom">sun glare</label><input type="checkbox" id="ui-bloom">');
+  var bloomChk = bloomRow.querySelector("input");
+  bloomChk.addEventListener("change", function () { params.bloom = bloomChk.checked; renderer.setParams({ bloom: params.bloom }); store(); });
+
+  var h3 = document.createElement("h3"); h3.textContent = "Camera"; panel.appendChild(h3);
+  var spRow = row('<label for="ui-speed">fly speed</label><input type="range" id="ui-speed" min="-0.7" max="2.6" step="0.01" title="the mouse wheel does this too"><output></output>');
+  var spInp = spRow.querySelector("input"), spOut = spRow.querySelector("output");
+  function syncSpeed() { spInp.value = Math.log10(cam.speed); spOut.textContent = (cam.speed < 10 ? cam.speed.toFixed(1) : Math.round(cam.speed)) + " m/s"; }
+  spInp.addEventListener("input", function () { cam.speed = Math.pow(10, +spInp.value); syncSpeed(); store(); });
+  var fovRow = row('<label for="ui-fov">field of view</label><input type="range" id="ui-fov" min="30" max="100" step="1"><output></output>');
+  var fovInp = fovRow.querySelector("input"), fovOut = fovRow.querySelector("output");
+  fovInp.addEventListener("input", function () { cam.fov = +fovInp.value * Math.PI / 180; fovOut.textContent = fovInp.value + "°"; store(); });
+  var crRow = row('<label for="ui-cruise">cruise forward</label><input type="checkbox" id="ui-cruise" title="drift slowly along the view heading">');
+  var crChk = crRow.querySelector("input");
+  crChk.addEventListener("change", function () { cruise = crChk.checked; store(); });
+  var btnRow = row('<button id="ui-home" type="button" title="back to the start point (R)">reset view</button><button id="ui-reset" type="button" title="restore every setting above">reset settings</button>');
+  btnRow.querySelector("#ui-home").addEventListener("click", resetView);
+  btnRow.querySelector("#ui-reset").addEventListener("click", function () {
+    params = Object.assign({}, defaults);
+    renderer.setParams(params);
+    renderer.rebuildShore();
+    cam.speed = 4; cam.fov = 62 * Math.PI / 180; cruise = false;
+    syncUI(); store();
+  });
+  var more = document.createElement("p"); more.className = "note";
+  more.innerHTML = 'Waves: FFT ocean, JONSWAP spectrum. Floor seen through Snell refraction, lit by caustics from the same waves. <a href="../index.html">2D SPH fluid →</a>';
+  panel.appendChild(more);
+
+  function syncUI() {
+    Object.keys(widgets).forEach(function (k) {
+      var w = widgets[k]; w.inp.value = params[k]; w.out.textContent = fmt(w.c, params[k]);
+    });
+    meshSel.value = String(params.meshDetail);
+    bloomChk.checked = !!params.bloom;
+    crChk.checked = cruise;
+    fovInp.value = Math.round(cam.fov * 180 / Math.PI); fovOut.textContent = fovInp.value + "°";
+    syncSpeed();
+  }
+  function store() {
+    var o = {};
+    Object.keys(params).forEach(function (k) { if (params[k] !== defaults[k]) o[k] = params[k]; });
+    o.camSpeed = cam.speed; o.fov = Math.round(cam.fov * 180 / Math.PI); o.cruise = cruise; o.sound = !!(snd && snd.on);
+    saveOpts(o);
+  }
+  syncUI();
+
+  var optsBtn = document.getElementById("ui-opts");
+  function togglePanel() { optsBtn.classList.toggle("on", panel.classList.toggle("open")); }
+  optsBtn.addEventListener("click", togglePanel);
+
+  // ------------------------------------------------------------ fullscreen
+  var fsBtn = document.getElementById("ui-fs");
+  function toggleFullscreen() {
+    var d = document;
+    if (d.fullscreenElement || d.webkitFullscreenElement) { (d.exitFullscreen || d.webkitExitFullscreen).call(d); return; }
+    var el = d.documentElement, req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req) { try { var pr = req.call(el); if (pr && pr.catch) pr.catch(function () {}); } catch (e) {} }
+  }
+  function onFs() {
+    var on = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    fsBtn.classList.toggle("on", on);
+    document.body.classList.toggle("fs", on);
+  }
+  document.addEventListener("fullscreenchange", onFs);
+  document.addEventListener("webkitfullscreenchange", onFs);
+  fsBtn.addEventListener("click", toggleFullscreen);
+
+  // ------------------------------------------------------------------ HUD
+  var paused = false;
+  var hudFps = document.getElementById("hud-fps"), hudHs = document.getElementById("hud-hs");
+  var hudAlt = document.getElementById("hud-alt"), hudFloor = document.getElementById("hud-floor");
+  var hudPause = document.getElementById("hud-pause");
+  function setPaused(v) { paused = v; hudPause.textContent = v ? "yes" : "no"; }
+  var fpsEMA = 60, hudTimer = 0;
+
+  cv.addEventListener("webglcontextlost", function (e) {
+    e.preventDefault();
+    document.getElementById("msg-text").textContent = "The GPU dropped the WebGL context. Reload the page to start the ocean again.";
+    document.getElementById("msg").hidden = false;
+    running = false;
+  });
+
+  // ------------------------------------------------------------ frame loop
+  var last = performance.now(), running = true;
+  function resize() {
+    var w = Math.max(1, Math.round(cv.clientWidth * dpr)), h = Math.max(1, Math.round(cv.clientHeight * dpr));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  }
+  function frame(now) {
+    if (!running) return;
+    requestAnimationFrame(frame);
+    var dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+    last = now;
+    moveCamera(dt);
+    resize();
+    var sdt = paused ? 0 : dt * params.timeScale;
+    play.setProbes(renderer.probeResults());
+    play.update(sdt, renderer.time, cam.pos, params.surf);
+    renderer.setProbePoints(play.probePoints());
+    renderer.addDrops(play.takeDrops());
+    if (snd.on) {
+      play.events.forEach(function (ev) { snd.splash(Math.hypot(ev.x - cam.pos[0], ev.z - cam.pos[2]), ev.size); });
+      if ((sndTimer += dt) > 0.1) { sndTimer = 0; listen(); }
+    }
+    play.events.length = 0;
+    renderer.render(paused ? 0 : dt, { pos: cam.pos, fwd: fwd(), fov: cam.fov });
+    if (dt > 0) fpsEMA += (1 / dt - fpsEMA) * 0.05;
+    hudTimer += dt;
+    if (hudTimer > 0.25) {
+      hudTimer = 0;
+      hudFps.textContent = Math.round(fpsEMA) + " fps";
+      hudFps.className = "chip " + (fpsEMA >= 50 ? "good" : fpsEMA < 28 ? "bad" : "");
+      hudHs.textContent = renderer.significantWaveHeight().toFixed(2) + " m";
+      hudAlt.textContent = cam.pos[1].toFixed(1) + " m";
+      var item = document.getElementById("hud-item");
+      if (tool === "boat" && play.boat) item.textContent = (Math.hypot(play.boat.vel[0], play.boat.vel[2]) * 1.944).toFixed(0) + " kn";
+      else item.textContent = Play.KINDS[throwKind].name;
+      var gh = renderer.groundHeightAt(cam.pos[0], cam.pos[2]);
+      hudFloor.textContent = gh < 0 ? (-gh).toFixed(1) + " m deep" : "land " + gh.toFixed(0) + " m";
+    }
+  }
+  requestAnimationFrame(frame);
+  document.getElementById("msg").hidden = true;
+  window.__lagoon = { renderer: renderer, cam: cam, setPaused: setPaused, play: play, setTool: setTool };
+  syncTool();
+}
+// Building the island takes a couple of seconds of CPU; let the page paint a
+// message first.
+document.getElementById("msg-text").textContent = "Building the island…";
+document.getElementById("msg").hidden = false;
+setTimeout(lagoonMain, 40);
+
+if ("serviceWorker" in navigator) {
+  try { navigator.serviceWorker.register("../sw.js?v=@@VER@@").catch(function () {}); } catch (e) {}
+}
+</script>
+</body>
+</html>
