@@ -50,7 +50,8 @@
     alignment: 1,      // multiplies the directional spreading exponent
     chop: 1.0,         // horizontal displacement (Tessendorf lambda)
     foam: 0.6,
-    swell: 1.2,        // significant height (m) of the ocean swell that surfs the island
+    swell: 1.6,        // significant height (m) of the ocean swell that surfs the island
+    surf: 1,           // scales the breaking shore waves (0 = off)
     depth: 40,         // water depth the FFT spectrum is built for (the open sea)
     clarity: 1,        // >1 clearer, <1 murkier
     caustics: 1,
@@ -60,7 +61,7 @@
     exposure: 0.22,
     bloom: true,
     renderScale: 1,
-    meshDetail: 384,
+    meshDetail: 512,
     timeScale: 1,
   };
 
@@ -484,19 +485,27 @@
     "uniform sampler2D uShore, uShoreK;",
     "uniform vec2 uShoreWT, uGroupWT;",   // cos/sin of the swell and wave-group phases now
     "uniform float uSurf;",                // surf height scale (0 = off)
-    // (forward lean, height) in units of H at phase th (crest at 0, front face < 0)
+    // (forward lean, height) in units of H at phase th (crest at 0, front face < 0).
+    // As the wave shoals it turns cnoidal: a narrow peaked crest over long
+    // flat troughs, the front face narrower than the back, the crest leaning
+    // shoreward. At the break the top throws forward over the face (the mesh
+    // folds, making a real hollow), then the wave becomes a bore: a steep
+    // turbulent front with a long sloping back.
     "vec2 surfProfile(float th, float s) {",
-    "  float steep = sat(s);",
-    "  float tf = th < 0.0 ? -PI * pow(-th / PI, 1.0 / (1.0 + 0.8 * steep)) : PI * pow(th / PI, 1.0 + 0.5 * steep);",
-    "  float c = cos(tf);",
-    "  float y = 0.5 * c + 0.12 * steep * (c * c - 0.5);",
-    "  float x = -0.5 * (0.3 + 0.45 * steep) * sin(tf);",
-    "  float plunge = smoothstep(0.85, 1.05, s) * (1.0 - smoothstep(1.2, 1.5, s));",
-    "  float lip = exp(-th * th / 0.2) * smoothstep(0.08, 0.42, y);",
-    "  x += plunge * 1.05 * lip;",
-    "  y -= plunge * 0.2 * lip * smoothstep(-0.1, 0.5, th);",
-    "  float bf = th < 0.0 ? smoothstep(-0.5, 0.0, th) : pow(1.0 - th / PI, 1.7);",
-    "  vec2 bore = vec2(0.28 * exp(-th * th / 0.07), 0.72 * bf - 0.17);",
+    "  float steep = smoothstep(0.15, 1.0, s);",
+    "  float wf = mix(1.1, 0.26, steep), wb = mix(1.1, 0.85, steep);",
+    "  float u = th / (th < 0.0 ? wf : wb);",
+    "  float pulse = exp(-u * u);",
+    "  float c0 = (wf + wb) * 0.14105;",          // mean of the pulse over a period
+    "  float y = mix(0.5 * cos(th), pulse - c0, sat(steep * 1.5));",
+    "  float top = pulse * pulse;",
+    "  float x = -0.22 * (1.0 - 0.6 * steep) * sin(th) + 0.3 * steep * top;",
+    "  float plunge = smoothstep(0.85, 1.02, s) * (1.0 - smoothstep(1.2, 1.5, s));",
+    "  float lip = top * top;",
+    "  x += plunge * (0.6 * top + 0.5 * lip);",
+    "  y -= plunge * 0.22 * lip * smoothstep(-0.05, 0.3, th);",
+    "  float bf = th < 0.0 ? smoothstep(-0.32, 0.0, th) : pow(1.0 - th / PI, 1.8);",
+    "  vec2 bore = vec2(0.25 * exp(-th * th / 0.03), 0.75 * bf - 0.2);",
     "  return mix(vec2(x, y), bore, smoothstep(1.2, 1.55, s));",
     "}",
     "struct Surf { vec3 d; vec2 slope; vec4 jac; float th, s, H, foam; vec2 n; };",
@@ -514,15 +523,15 @@
     "  vec2 K = b.xy, n = K / max(length(K), 1e-5);",
     "  float s = a.w;",
     "  vec2 f = surfProfile(th, s) * H;",
-    "  vec2 df = (surfProfile(th + 0.03, s) - surfProfile(th - 0.03, s)) * (H / 0.06);",
+    "  vec2 df = (surfProfile(th + 0.012, s) - surfProfile(th - 0.012, s)) * (H / 0.024);",
     // theta = w t - phi, so d(theta)/dp = -K
     "  r.d = vec3(n.x * f.x, f.y, n.y * f.x);",
     "  r.slope = -df.y * K;",
     "  r.jac = -df.x * vec4(n.x * K.x, n.y * K.y, n.x * K.y, n.y * K.x);",
     "  r.th = th; r.s = s; r.H = H; r.n = n;",
-    "  float crest = smoothstep(0.82, 1.0, s) * exp(-(th + 0.05) * (th + 0.05) / 0.12);",
-    "  float bore = smoothstep(1.1, 1.4, s) * (th < 0.0 ? smoothstep(-0.55, -0.05, th) : exp(-th * 0.5));",
-    "  r.foam = sat(max(crest, bore) + smoothstep(1.0, 1.7, s) * 0.3) * sat(H * 4.0);",
+    "  float crest = smoothstep(0.88, 1.05, s) * exp(-(th + 0.05) * (th + 0.05) / 0.08);",
+    "  float bore = smoothstep(1.05, 1.3, s) * (th < 0.0 ? smoothstep(-0.32, -0.02, th) : exp(-th * 0.38));",
+    "  r.foam = sat(max(crest, bore) + smoothstep(1.0, 1.7, s) * 0.15) * sat(H * 4.0);",
     "  return r;",
     "}",
   ].join("\n");
@@ -870,7 +879,14 @@
     "    float t = traceGround(P, T);",
     "    vec3 hit = P + T * t;",
     "    float shadow = terrainShadow(P, 0.0);",
-    "    vec3 refr = throughWater(shadeFloor(hit, dist + t, shadow), t, 0.5 * max(-hit.y, 0.0));",
+    // a raised crest is a thicker body of water to look through
+    "    float body = max(P.y + 0.25 * sw.H, 0.0) * sat(1.2 - N.y) * 3.0;",
+    "    vec3 refr = throughWater(shadeFloor(hit, dist + t, shadow), t + body, 0.5 * max(-hit.y, 0.0));",
+    // the surf zone is milky with stirred-up sand: it catches sun and sky
+    // light diffusely, which is what shows the shape of a breaking face
+    "    float turbid = smoothstep(0.45, 1.15, sw.s) * sat(sw.H * 2.5) * 0.6;",
+    "    vec3 milk = vec3(0.32, 0.6, 0.56) * (uSunCol * max(dot(N, uSunDir), 0.0) * shadow * 0.85 + skyIrradiance() * (0.4 + 0.3 * N.y)) / PI;",
+    "    refr = mix(refr, milk, turbid);",
     "    col = mix(refr, refl, F);",
     // sun glint (GGX)
     "    vec3 H = normalize(V + uSunDir);",
@@ -880,13 +896,16 @@
     // light through thin wave crests
     "    float sss = pow(sat(dot(V, -uSunDir) * 0.6 + 0.4), 3.0) * sat(P.y * 1.5) * sat(1.0 - N.y + 0.15);",
     "    col += inscatter(0.5) * sss * 1.4;",
+    // sunlight passing through a raised crest lights it turquoise from inside
+    "    float glow = sat(P.y * 0.9) * sat(1.15 - N.y) * sat(sw.H * 2.0);",
+    "    col += vec3(0.06, 0.42, 0.40) * (uSunCol.g * 0.05) * glow * (0.6 + 0.8 * pow(sat(dot(V, -uSunDir) * 0.5 + 0.5), 2.0));",
     // whitecap foam, broken up by noise; surf whitewater is lacy where thin
     // and solid where the bore churns; a lacy edge rims the swash film
     "    vec2 fw = vXZ + uOffD - sw.n * (uTime * 0.6);",
     "    float lace = vnoise(fw * 0.9) * 0.55 + vnoise(fw * 3.1) * 0.45;",
     "    float film = P.y - groundH(P.xz);",
     "    float edge = smoothstep(0.0, 0.03, film) * (1.0 - smoothstep(0.04, 0.16, film)) * step(1.5, sw.s);",
-    "    float surf = sat(sw.foam * 1.6 - 0.25 + (lace - 0.5) * 1.2) + edge * smoothstep(0.35, 0.6, lace);",
+    "    float surf = sat(sw.foam * 1.8 - 0.3 + (lace - 0.5) * 1.2) + edge * smoothstep(0.45, 0.65, lace) * 0.8;",
     "    float m = max(smoothstep(0.25, 0.95, foam * (0.5 + 0.9 * vnoise((vXZ + uOffD) * 2.0)) * uFoamStr), sat(surf));",
     "    vec3 foamCol = 0.85 * (uSunCol * max(dot(N, uSunDir), 0.0) * shadow + skyIrradiance()) / PI;",
     "    col = mix(col, foamCol, m);",
@@ -1467,7 +1486,7 @@
       uWorldUV0: [(O[0] + this.world.HALF) / this.world.SIZE, (O[1] + this.world.HALF) / this.world.SIZE],
       uOffD: [mod(O[0], 4096), mod(O[1], 4096)],
       uCaustic: this.caustic, uCausL: CAUSTIC_L, uCausDepth: causDepth, uCausStr: p.caustics,
-      uShore: this.shoreTex, uShoreK: this.shoreKTex, uSurf: 1,
+      uShore: this.shoreTex, uShoreK: this.shoreKTex, uSurf: p.surf,
       uShoreWT: [Math.cos(shorePh), Math.sin(shorePh)], uGroupWT: [Math.cos(groupPh), Math.sin(groupPh)],
       uOffC: [mod(O[0], CAUSTIC_L), mod(O[1], CAUSTIC_L)], uCausShift: causShift,
       uProbe: this.probe,

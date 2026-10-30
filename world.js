@@ -122,8 +122,9 @@
         if (d > 0) {
           // land: concave beach rising to a berm, dunes, then jungle hills to the peak
           var beachW = 26 + 16 * nCoast(c * 4 + 3, s * 4 - 1);
-          var beach = 2.3 * (1 - Math.exp(-d / 11)) + 0.6 * smoothstep(beachW * 0.8, beachW * 1.4, d);
-          var inland = Math.max(0, d - beachW);
+          // foreshore about 1:11 at the waterline, flattening to a berm
+          var beach = 2.4 * (1 - Math.exp(-d / 26)) + 0.6 * smoothstep(beachW * 1.2, beachW * 2.0, d);
+          var inland = Math.max(0, d - beachW * 1.6);
           var pr = Math.hypot(x - peak[0], z - peak[1]), pr2 = Math.hypot(x - peak2[0], z - peak2[1]);
           var summit = 205 * Math.exp(-Math.pow(pr / 115, 1.5)) + 95 * Math.exp(-Math.pow(pr2 / 120, 1.7));
           // fluted flanks: radial ridges and gullies cut by rain erosion
@@ -314,6 +315,7 @@
     blur(shadow, 20); blur(shadow, 20);
     var H = new Float32Array(n2), stage = new Float32Array(n2);
     var ratio = new Float32Array(n2).fill(1), broke = new Float32Array(n2).fill(-1);   // arrival time of the break, -1 = not breaking
+    var hBreak = new Float32Array(n2);                     // height of the last breaker on this ray
     var order = orderBy(A, 8192);
     for (o = 0; o < n2; o++) {
       k = order[o]; i = k % N; j = (k / N) | 0;
@@ -324,16 +326,26 @@
         var Hu = swellH * (1 - 0.8 * shadow[k]) * shoaling(d);
         var r = up >= 0 ? ratio[up] : 1, b = up >= 0 ? broke[up] : -1;
         var Hc = r * Hu;
-        if (b < 0 && Hc > 0.78 * d) b = A[k];                // break point
-        var cap = b >= 0 ? 0.55 * d : 0.78 * d;              // breaker / bore height limit
+        var hb = up >= 0 ? hBreak[up] : 0;
+        if (b < 0 && Hc > 0.78 * d) { b = A[k]; hb = Hc; }   // break point
+        // breaker limit 0.78 d; a bore keeps ~0.55 d plus the momentum that
+        // carries it up the beach (scaled by the incoming swell)
+        var cap = b >= 0 ? 0.55 * d + 0.16 * swellH * (1 - 0.8 * shadow[k]) : 0.78 * d;
         if (Hc > cap) { Hc = cap; r = Hc / Hu; }
         if (b >= 0 && Hc < 0.3 * d) b = -1;                  // reformed in deeper water
-        ratio[k] = r; broke[k] = b;
+        ratio[k] = r; broke[k] = b; hBreak[k] = hb;
+        // in the last metre of depth the bore surges toward its run-up level,
+        // meeting the swash on the sand without a step
+        if (b >= 0 && d < 1) Hc = Math.max(Hc, 1.3 * 0.45 * hb / 0.55 * (1 - d));
         H[k] = Hc * clamp01((24 - d) / 12);
         stage[k] = b < 0 ? Math.min(Hc / (0.78 * d), 0.999) : 1 + clamp01((A[k] - b) / (0.55 * SWELL_T));
       } else {
-        // the bore runs up the beach and dies within a few metres
-        H[k] = up >= 0 && -f.sdf[k] < 40 ? H[up] * Math.exp(-DX / 5.5) : 0;
+        // Swash: the bore runs up the sand to a run-up height R ~ 0.45 x the
+        // breaker. On land H is sized so the bore crest (0.55 H) clears the
+        // sand below R and falls short above it.
+        var hb2 = up >= 0 ? hBreak[up] : 0, R = 0.45 * hb2, hg = h[k];
+        hBreak[k] = hb2;
+        H[k] = R > 0.02 && hg < R + 0.3 ? (hg + 1.3 * Math.max(R - hg, 0)) / 0.55 * smoothstep(R + 0.3, R, hg) : 0;
         stage[k] = 2;
       }
     }
