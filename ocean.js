@@ -492,6 +492,7 @@
     // folds, making a real hollow), then the wave becomes a bore: a steep
     // turbulent front with a long sloping back.
     "vec2 surfProfile(float th, float s) {",
+    "  th -= TAU * floor((th + PI) / TAU);",   // keep the phase in [-pi, pi)
     "  float steep = smoothstep(0.15, 1.0, s);",
     "  float wf = mix(1.1, 0.26, steep), wb = mix(1.1, 0.85, steep);",
     "  float u = th / (th < 0.0 ? wf : wb);",
@@ -504,7 +505,7 @@
     "  float lip = top * top;",
     "  x += plunge * (0.6 * top + 0.5 * lip);",
     "  y -= plunge * 0.22 * lip * smoothstep(-0.05, 0.3, th);",
-    "  float bf = th < 0.0 ? smoothstep(-0.32, 0.0, th) : pow(1.0 - th / PI, 1.8);",
+    "  float bf = th < 0.0 ? smoothstep(-0.32, 0.0, th) : pow(max(1.0 - th / PI, 0.0), 1.8);",
     "  vec2 bore = vec2(0.25 * exp(-th * th / 0.03), 0.75 * bf - 0.2);",
     "  return mix(vec2(x, y), bore, smoothstep(1.2, 1.55, s));",
     "}",
@@ -579,6 +580,7 @@
     // steep rays refraction produces.
     "float groundGap(vec3 P, vec3 D, float t) { return P.y + D.y * t - groundH(P.xz + D.xz * t); }",
     "float traceGround(vec3 P, vec3 D) {",
+    "  D.y = min(D.y, -0.05);",          // a folded lip can bend the ray level or upward
     "  float t0 = max((P.y - groundH(P.xz)) / -D.y, 0.0), f0 = groundGap(P, D, t0);",
     "  float t1 = t0 + f0 / -D.y, f1 = groundGap(P, D, t1);",
     "  for (int i = 0; i < 3; i++) {",
@@ -828,6 +830,7 @@
     "  } else {",
     "    col = inscatter(0.5 * max(-uCam.y, 0.0) + 1.0);",
     "  }",
+    "  if (any(isnan(col))) col = vec3(0.0);",
     "  o = vec4(min(col, vec3(3e4)), 1.0);",
     "}",
   ].join("\n");
@@ -947,6 +950,7 @@
     "    col = mix(col, foam * vec3(0.7) * skyIrradiance() / PI, sat(foam * uFoamStr * 0.6));",
     "    col = throughWater(col, dist, zFog);",
     "  }",
+    "  if (any(isnan(col))) col = vec3(0.0);",
     "  o = vec4(min(col, vec3(3e4)), 1.0);",   // stay inside half-float range
     "}",
   ].join("\n");
@@ -1000,6 +1004,7 @@
     "  col += uSunCol * shadow * wet * 0.04 * pow(max(dot(n, H), 0.0), 120.0) * sat(P.y + 0.2);",
     "  if (under) col = throughWater(col, dist, 0.5 * (max(-uCam.y, 0.0) + z));",
     "  else col = aerial(col, -V, dist);",
+    "  if (any(isnan(col))) col = vec3(0.0);",
     "  o = vec4(min(col, vec3(3e4)), 1.0);",
     "}",
   ].join("\n");
@@ -1099,6 +1104,7 @@
     // sunlight through the leaves when you look toward the sun
     "  col += alb * uSunCol * trans * 0.25 * pow(sat(dot(-V, uSunDir)), 4.0) * vis / PI * 3.0;",
     "  col = aerialP(col, -V, dist);",
+    "  if (any(isnan(col))) col = vec3(0.0);",
     "  o = vec4(min(col, vec3(3e4)), 1.0);",
     "}",
   ].join("\n");

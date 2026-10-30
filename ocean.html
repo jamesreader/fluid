@@ -210,7 +210,7 @@ function lagoonMain() {
     var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     moved += Math.abs(dx) + Math.abs(dy);
     drag.x = e.clientX; drag.y = e.clientY;
-    look(-dx, -dy);              // grab the view, like a photo sphere
+    look(dx, dy);
   });
   cv.addEventListener("pointerup", function (e) {
     if (e.pointerType === "touch" || !drag) return;
