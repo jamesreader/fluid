@@ -19,6 +19,8 @@
  *   (e) the island (world.js): one island with a summit and a beach band,
  *       finite shore fields, swell arriving at the surf beach in order, and a
  *       reef that keeps the lagoon calmer than the open surf beach.
+ *   (f) reef life (life.js): coral and animal meshes are valid; fish stay
+ *       finite, under water and off the reef, and scatter from a diver.
  *
  * Exits 0 on pass, non-zero with a FAIL message otherwise.
  */
@@ -137,6 +139,48 @@ console.log("--- (e) the island ---");
   console.log("    max wave height: surf beach " + surf.toFixed(2) + " m, lee lagoon " + lagoon.toFixed(2) + " m");
   if (surf > 0.8 && lagoon < 0.5 * surf) pass("(e) reef shelters the lagoon (" + lagoon.toFixed(2) + " m vs " + surf.toFixed(2) + " m surf)");
   else fail("(e) surf " + surf.toFixed(2) + " m vs lagoon " + lagoon.toFixed(2) + " m");
+})();
+
+/* ------------------------------------------------------------------ (f) */
+console.log("--- (f) reef life ---");
+(function () {
+  var World = require("./world.js"), Life = require("./life.js");
+  var w = World.build({});
+  var meshes = Object.assign({}, World.coralMeshes(7), { fish: World.fishMesh(), turtle: World.turtleMesh(), ray: World.rayMesh() });
+  var badMesh = Object.keys(meshes).filter(function (k) {
+    var m = meshes[k], nv = m.vertices.length / 9;
+    for (var i = 0; i < m.vertices.length; i++) if (!isFinite(m.vertices[i])) return true;
+    for (i = 0; i < m.indices.length; i++) if (m.indices[i] >= nv) return true;
+    return false;
+  });
+  if (badMesh.length === 0) pass("(f) " + Object.keys(meshes).length + " reef meshes are finite with valid indices");
+  else fail("(f) broken meshes: " + badMesh.join(", "));
+  var e = new Life.Ecosystem(w, 1), cam = [392, -2.6, 304], above = 0, under = 0, bad = 0;
+  for (var f = 0; f < 600; f++) {
+    e.update(1 / 30, cam);
+    e.schools.forEach(function (s) {
+      if (!s.alive) return;
+      for (var i = 0; i < s.n; i++) {
+        var x = s.pos[i * 3], y = s.pos[i * 3 + 1], z = s.pos[i * 3 + 2];
+        if (!isFinite(x + y + z)) bad++;
+        if (y > -0.29) above++;
+        if (y < World.heightAt(w, x, z) + 0.07) under++;
+      }
+    });
+  }
+  console.log("    " + e.fishCount() + " fish in " + e.schools.filter(function (s) { return s.alive; }).length + " schools, " +
+    e.turtles.filter(function (t) { return t.alive; }).length + " turtles, " + e.rays.filter(function (r) { return r.alive; }).length + " rays");
+  if (bad === 0 && above === 0 && under === 0 && e.fishCount() > 100) pass("(f) fish stay finite, under the surface and above the reef for 20 s");
+  else fail("(f) fish: " + bad + " non-finite, " + above + " above surface, " + under + " inside the reef");
+  // a diver swimming into a school scatters it
+  var s = e.schools.filter(function (q) { return q.alive && q.n > 30; })[0], c = [0, 0, 0];
+  for (var i = 0; i < s.n; i++) { c[0] += s.pos[i * 3] / s.n; c[1] += s.pos[i * 3 + 1] / s.n; c[2] += s.pos[i * 3 + 2] / s.n; }
+  function spread() { var d = 0; for (var j = 0; j < s.n; j++) d += Math.hypot(s.pos[j * 3] - c[0], s.pos[j * 3 + 1] - c[1], s.pos[j * 3 + 2] - c[2]); return d / s.n; }
+  var d0 = spread();
+  for (f = 0; f < 30; f++) e.update(1 / 30, c);
+  var d1 = spread();
+  if (d1 > d0 + 1) pass("(f) a school scatters from the diver (" + d0.toFixed(1) + " -> " + d1.toFixed(1) + " m in 1 s)");
+  else fail("(f) school did not scatter: " + d0.toFixed(2) + " -> " + d1.toFixed(2) + " m");
 })();
 
 console.log("");

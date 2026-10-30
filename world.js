@@ -409,7 +409,8 @@
       timings: { terrain: t1 - t0, fields: t2 - t1 },
       // helpers travel with the data so the renderer needs no global
       heightAt: heightAt, terrainTexture: terrainTexture, shoreTexture: shoreTexture, shoreKTexture: shoreKTexture, setSwell: setSwell,
-      palmMesh: palmMesh, canopyMesh: canopyMesh,
+      palmMesh: palmMesh, canopyMesh: canopyMesh, coralMeshes: coralMeshes, bilinear: bilinear,
+      fishMesh: fishMesh, turtleMesh: turtleMesh, rayMesh: rayMesh,
     };
     setSwell(w, opts.swell == null ? 1.2 : opts.swell, opts.swellDir == null ? 35 : opts.swellDir);
     w.timings.shore = Date.now() - t2;
@@ -579,11 +580,197 @@
     return { vertices: new Float32Array(V), indices: new Uint16Array(I) };
   }
 
+  // ------------------------------------------------------------ reef life
+  // Meshes share the plant vertex format: position, normal, uv, part.
+  function builder() {
+    var V = [], I = [];
+    return {
+      vert: function (p, n, u, v, k) { V.push(p[0], p[1], p[2], n[0], n[1], n[2], u, v, k || 0); return V.length / 9 - 1; },
+      tri: function (a, b, c) { I.push(a, b, c); },
+      quad: function (a, b, c, d) { I.push(a, b, c, a, c, d); },
+      count: function () { return V.length / 9; },
+      done: function () { return { vertices: new Float32Array(V), indices: new Uint16Array(I) }; },
+    };
+  }
+  function v3norm(a) { var l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+  function v3cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+  // A tapered tube along points[] (radius per point), `sides` around.
+  function tube(B, pts, radii, sides, part, v0, v1) {
+    var base = B.count();
+    for (var i = 0; i < pts.length; i++) {
+      var t = v3norm(i < pts.length - 1 ? [pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1], pts[i + 1][2] - pts[i][2]] : [pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1], pts[i][2] - pts[i - 1][2]]);
+      var u = v3norm(v3cross(t, Math.abs(t[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0])), b = v3cross(t, u);
+      for (var j = 0; j <= sides; j++) {
+        var a = j / sides * TAU, c = Math.cos(a), s = Math.sin(a);
+        var n = [u[0] * c + b[0] * s, u[1] * c + b[1] * s, u[2] * c + b[2] * s];
+        B.vert([pts[i][0] + n[0] * radii[i], pts[i][1] + n[1] * radii[i], pts[i][2] + n[2] * radii[i]], n, j / sides, v0 + (v1 - v0) * i / (pts.length - 1), part);
+      }
+    }
+    for (i = 0; i < pts.length - 1; i++) for (j = 0; j < sides; j++) {
+      var k0 = base + i * (sides + 1) + j, k1 = k0 + sides + 1;
+      B.quad(k0, k1, k1 + 1, k0 + 1);
+    }
+  }
+  // Coral colonies, about a metre across: brain, staghorn, table, sea fan,
+  // soft tube coral, boulder. Shaders add the surface detail.
+  function coralMeshes(seed) {
+    var rnd = mulberry32((seed || 7) + 808), n = makeNoise((seed || 7) + 909), out = {}, B, i, j;
+    // brain: an undercut dome
+    B = builder();
+    for (i = 0; i <= 10; i++) for (j = 0; j <= 20; j++) {
+      var th = i / 10 * Math.PI * 0.56, ph = j / 20 * TAU;
+      var p = [Math.sin(th) * Math.cos(ph), Math.cos(th) * 0.72 - 0.08, Math.sin(th) * Math.sin(ph)];
+      B.vert(p, v3norm([p[0], p[1] / 0.72, p[2]]), j / 20, i / 10, 0);
+    }
+    for (i = 0; i < 10; i++) for (j = 0; j < 20; j++) { var a0 = i * 21 + j; B.quad(a0, a0 + 21, a0 + 22, a0 + 1); }
+    out.brain = B.done();
+    // staghorn: forking antlers
+    B = builder();
+    (function branch(start, dir, len, r, depth) {
+      var pts = [], radii = [], end = [start[0] + dir[0] * len, start[1] + dir[1] * len, start[2] + dir[2] * len];
+      for (var k = 0; k <= 2; k++) { var t = k / 2; pts.push([start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t, start[2] + (end[2] - start[2]) * t]); radii.push(r * (1 - 0.35 * t)); }
+      tube(B, pts, radii, 4, depth, depth / 3, (depth + 1) / 3);
+      if (depth >= 2) return;
+      var kids = 3 + (rnd() < 0.5 ? 1 : 0);
+      for (var c = 0; c < kids; c++) {
+        var a = c / kids * TAU + rnd(), sp = 0.45 + rnd() * 0.3;
+        var nd = v3norm([dir[0] + Math.cos(a) * sp, dir[1] + 0.25, dir[2] + Math.sin(a) * sp]);
+        branch(end, nd, len * (0.65 + rnd() * 0.2), r * 0.62, depth + 1);
+      }
+    })([0, -0.05, 0], [0, 1, 0], 0.42, 0.07, 0);
+    out.staghorn = B.done();
+    // table: a scalloped plate on a stalk
+    B = builder();
+    tube(B, [[0, -0.05, 0], [0, 0.42, 0]], [0.1, 0.08], 6, 0, 0, 0.3);
+    var NS = 28, ring = [];
+    for (j = 0; j <= NS; j++) { var aa = j / NS * TAU; ring.push(1 + 0.07 * Math.sin(aa * 9) + 0.12 * n(Math.cos(aa) * 2, Math.sin(aa) * 2)); }
+    // top and underside, joined by a rounded rim whose normals point outward
+    var rims = {};
+    [[1, 0.47], [-1, 0.42]].forEach(function (side) {
+      var c = B.vert([0, side[1], 0], [0, side[0], 0], 0, 0.5, side[0] > 0 ? 1 : 2), ks = [];
+      for (var q = 0; q <= NS; q++) { var aq = q / NS * TAU; ks.push(B.vert([Math.cos(aq) * ring[q], side[1] + 0.03 * ring[q], Math.sin(aq) * ring[q]], v3norm([Math.cos(aq) * 0.25, side[0], Math.sin(aq) * 0.25]), ring[q], 0.5 + q / NS * 0.5, side[0] > 0 ? 1 : 2)); }
+      for (q = 0; q < NS; q++) { if (side[0] > 0) B.tri(c, ks[q + 1], ks[q]); else B.tri(c, ks[q], ks[q + 1]); }
+      rims[side[0]] = ks;
+    });
+    var band = [];
+    for (var q2 = 0; q2 <= NS; q2++) {
+      var aq2 = q2 / NS * TAU, ro = [Math.cos(aq2), 0, Math.sin(aq2)], rr = ring[q2] + 0.035;
+      band.push(B.vert([ro[0] * rr, 0.445 + 0.03 * ring[q2], ro[2] * rr], ro, ring[q2], 0.5 + q2 / NS * 0.5, 1));
+    }
+    for (q2 = 0; q2 < NS; q2++) { B.quad(rims[1][q2], rims[1][q2 + 1], band[q2 + 1], band[q2]); B.quad(band[q2], band[q2 + 1], rims[-1][q2 + 1], rims[-1][q2]); }
+    out.table = B.done();
+    // sea fan: a curved lattice blade (the shader cuts the holes)
+    B = builder();
+    for (i = 0; i <= 8; i++) for (j = 0; j <= 10; j++) {
+      var u = j / 10 * 2 - 1, v = i / 8;
+      var w = Math.pow(Math.sin(Math.PI * Math.min(1, v * 1.1 + 0.05)), 0.6);
+      B.vert([u * 0.75 * w, v * (1.05 - 0.25 * u * u), 0.12 * Math.sin(u * 2.4) * v], v3norm([-0.2 * Math.cos(u * 2.4), 0, 1]), u, v, 3);
+    }
+    for (i = 0; i < 8; i++) for (j = 0; j < 10; j++) { var b0 = i * 11 + j; B.quad(b0, b0 + 1, b0 + 12, b0 + 11); }
+    out.fan = B.done();
+    // soft coral / tube sponges: a cluster of open tubes
+    B = builder();
+    for (var tIdx = 0; tIdx < 6; tIdx++) {
+      var ta = tIdx / 6 * TAU + rnd() * 0.5, tr = tIdx === 0 ? 0 : 0.18 + rnd() * 0.12, hgt = 0.45 + rnd() * 0.55;
+      var bx = Math.cos(ta) * tr, bz = Math.sin(ta) * tr, lean = 0.15 * tr;
+      tube(B, [[bx, -0.05, bz], [bx + Math.cos(ta) * lean * 0.5, hgt * 0.5, bz + Math.sin(ta) * lean * 0.5], [bx + Math.cos(ta) * lean, hgt, bz + Math.sin(ta) * lean]],
+        [0.09, 0.085, 0.1], 6, 4, 0, 1);
+    }
+    out.soft = B.done();
+    // boulder (massive) coral: a lumpy low dome
+    B = builder();
+    for (i = 0; i <= 8; i++) for (j = 0; j <= 16; j++) {
+      var th2 = i / 8 * Math.PI * 0.6, ph2 = j / 16 * TAU;
+      var d = [Math.sin(th2) * Math.cos(ph2), Math.cos(th2), Math.sin(th2) * Math.sin(ph2)];
+      var rr = 1 + 0.18 * n(d[0] * 2.3 + 1, d[2] * 2.3 + d[1]) + 0.07 * n(d[0] * 6, d[2] * 6 - d[1] * 3);
+      B.vert([d[0] * rr, d[1] * rr * 0.55 - 0.1, d[2] * rr], d, j / 16, i / 8, 5);
+    }
+    for (i = 0; i < 8; i++) for (j = 0; j < 16; j++) { var c0 = i * 17 + j; B.quad(c0, c0 + 17, c0 + 18, c0 + 1); }
+    out.boulder = B.done();
+    return out;
+  }
+
+  // Reef fish, 1 m long along +x (head at +0.5), laterally flattened, with a
+  // forked tail and a dorsal fin. part: 0 body, 1 fins. uv: (head..tail, around).
+  function fishMesh() {
+    var B = builder(), SEG = 12, AROUND = 10, i, j;
+    function prof(t) {   // t 0 = snout .. 1 = tail root
+      var s = Math.sin(Math.PI * Math.pow(t, 0.75));
+      return [0.2 * s + 0.012, 0.075 * s + 0.006];          // half height, half width
+    }
+    for (i = 0; i <= SEG; i++) {
+      var t = i / SEG, x = 0.5 - t * 0.95, r = prof(t);
+      for (j = 0; j <= AROUND; j++) {
+        var a = j / AROUND * TAU, cy = Math.cos(a), cz = Math.sin(a);
+        B.vert([x, cy * r[0], cz * r[1]], v3norm([0.15 * (0.5 - t), cy / r[0], cz / r[1]]), t, j / AROUND, 0);
+      }
+    }
+    for (i = 0; i < SEG; i++) for (j = 0; j < AROUND; j++) { var k0 = i * (AROUND + 1) + j; B.quad(k0, k0 + 1, k0 + AROUND + 2, k0 + AROUND + 1); }
+    // forked tail (two-sided)
+    var tb = B.vert([-0.45, 0, 0], [0, 0, 1], 1.0, 0.5, 1);
+    var tu = B.vert([-0.72, 0.24, 0], [0, 0, 1], 1.3, 0.0, 1), tm = B.vert([-0.62, 0, 0], [0, 0, 1], 1.2, 0.5, 1), td = B.vert([-0.72, -0.24, 0], [0, 0, 1], 1.3, 1.0, 1);
+    B.tri(tb, tu, tm); B.tri(tb, tm, td);
+    // dorsal and anal fins
+    var d0 = B.vert([0.15, 0.19, 0], [0, 0, 1], 0.35, 0, 1), d1 = B.vert([-0.25, 0.17, 0], [0, 0, 1], 0.75, 0, 1), d2 = B.vert([-0.1, 0.33, 0], [0, 0, 1], 0.6, 0, 1);
+    B.tri(d0, d1, d2);
+    var a0 = B.vert([-0.05, -0.17, 0], [0, 0, 1], 0.55, 1, 1), a1 = B.vert([-0.3, -0.13, 0], [0, 0, 1], 0.8, 1, 1), a2 = B.vert([-0.25, -0.26, 0], [0, 0, 1], 0.75, 1, 1);
+    B.tri(a0, a2, a1);
+    return B.done();
+  }
+  // Green sea turtle, ~1 m shell along +x. part: 0 shell, 1 belly/head,
+  // 2/3 front flippers (left/right), 4/5 rear flippers.
+  function turtleMesh() {
+    var B = builder(), i, j, R = 10, C = 16;
+    for (i = 0; i <= R; i++) for (j = 0; j <= C; j++) {          // carapace
+      var th = i / R * Math.PI * 0.5, ph = j / C * TAU;
+      var p = [Math.sin(th) * Math.cos(ph) * 0.5, Math.cos(th) * 0.2 + 0.02, Math.sin(th) * Math.sin(ph) * 0.4];
+      B.vert(p, v3norm([p[0] / 0.25, p[1] / 0.04, p[2] / 0.16]), j / C, i / R, 0);
+    }
+    for (i = 0; i < R; i++) for (j = 0; j < C; j++) { var k0 = i * (C + 1) + j; B.quad(k0, k0 + C + 1, k0 + C + 2, k0 + 1); }
+    var c = B.vert([0, 0.0, 0], [0, -1, 0], 0.5, 0.5, 1), rim = [];          // plastron
+    for (j = 0; j <= C; j++) { var ph2 = j / C * TAU; rim.push(B.vert([Math.cos(ph2) * 0.5, 0.02, Math.sin(ph2) * 0.4], [0, -1, 0], j / C, 1, 1)); }
+    for (j = 0; j < C; j++) B.tri(c, rim[j + 1], rim[j]);
+    tube(B, [[0.42, 0.04, 0], [0.55, 0.06, 0], [0.66, 0.05, 0]], [0.07, 0.08, 0.05], 6, 1, 0, 1);   // head
+    function flipper(root, tip, width, part) {
+      var side = v3norm(v3cross([tip[0] - root[0], tip[1] - root[1], tip[2] - root[2]], [0, 1, 0]));
+      var q = [], k;
+      for (k = 0; k <= 3; k++) {
+        var t = k / 3, w = width * Math.sin(Math.PI * Math.min(1, 0.15 + t * 0.85));
+        var cc = [root[0] + (tip[0] - root[0]) * t, root[1] + (tip[1] - root[1]) * t, root[2] + (tip[2] - root[2]) * t];
+        q.push(B.vert([cc[0] + side[0] * w, cc[1], cc[2] + side[2] * w], [0, 1, 0], t, 0, part), B.vert([cc[0] - side[0] * w, cc[1], cc[2] - side[2] * w], [0, 1, 0], t, 1, part));
+      }
+      for (k = 0; k < 3; k++) B.quad(q[2 * k], q[2 * k + 2], q[2 * k + 3], q[2 * k + 1]);
+    }
+    flipper([0.22, 0.03, -0.3], [0.05, 0.0, -0.95], 0.11, 2);
+    flipper([0.22, 0.03, 0.3], [0.05, 0.0, 0.95], 0.11, 3);
+    flipper([-0.32, 0.02, -0.22], [-0.52, 0.0, -0.42], 0.08, 4);
+    flipper([-0.32, 0.02, 0.22], [-0.52, 0.0, 0.42], 0.08, 5);
+    return B.done();
+  }
+  // Spotted eagle ray, 1 m long, wings spanning z -1..1 (they flap in the
+  // vertex shader by |z|), whip tail. part: 0 body/wings, 1 tail.
+  function rayMesh() {
+    var B = builder(), NZ = 16, NX = 6, i, j;
+    for (i = 0; i <= NZ; i++) for (j = 0; j <= NX; j++) {
+      var zz = i / NZ * 2 - 1, az = Math.abs(zz);
+      var lead = 0.35 - 0.25 * az * az, trail = -0.3 + 0.32 * Math.pow(az, 0.8);     // swept-back wings
+      var x = lead + (trail - lead) * j / NX;
+      var th = 0.07 * (1 - az * az) * Math.sin(Math.PI * j / NX);
+      B.vert([x, th, zz], [0, 1, 0], (zz + 1) / 2, j / NX, 0);
+    }
+    for (i = 0; i < NZ; i++) for (j = 0; j < NX; j++) { var k0 = i * (NX + 1) + j; B.quad(k0, k0 + NX + 1, k0 + NX + 2, k0 + 1); }
+    var h0 = B.vert([0.38, 0.02, 0], [0, 1, 0], 0.5, 0, 0), h1 = B.vert([0.5, 0.0, -0.07], [0, 1, 0], 0.5, 0, 0), h2 = B.vert([0.5, 0.0, 0.07], [0, 1, 0], 0.5, 0, 0);
+    B.tri(h0, h2, h1);    // the snout
+    tube(B, [[-0.28, 0.02, 0], [-0.8, 0.01, 0], [-1.6, 0.0, 0]], [0.025, 0.012, 0.004], 4, 1, 0, 1);
+    return B.done();
+  }
+
   return {
     N: N, SIZE: SIZE, DX: DX, HALF: HALF, OCEAN_FLOOR: OCEAN_FLOOR, SWELL_T: SWELL_T, SWASH_C: SWASH_C,
     WINDWARD: WINDWARD, GROUP: GROUP,
     build: build, setSwell: setSwell, heightAt: heightAt, bilinear: bilinear,
-    scatterPlants: scatterPlants, palmMesh: palmMesh, canopyMesh: canopyMesh,
+    scatterPlants: scatterPlants, palmMesh: palmMesh, canopyMesh: canopyMesh, coralMeshes: coralMeshes,
+    fishMesh: fishMesh, turtleMesh: turtleMesh, rayMesh: rayMesh,
     terrainTexture: terrainTexture, shoreTexture: shoreTexture, shoreKTexture: shoreKTexture,
     phaseSpeed: phaseSpeed, shoaling: shoaling, fastSweep: fastSweep, makeNoise: makeNoise, mulberry32: mulberry32,
   };

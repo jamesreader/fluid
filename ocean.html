@@ -127,6 +127,7 @@
 </div>
 
 <script src="world.js?v=@@VER@@"></script>
+<script src="life.js?v=@@VER@@"></script>
 <script src="ocean.js?v=@@VER@@"></script>
 <script>
 "use strict";
@@ -152,7 +153,9 @@ function lagoonMain() {
   var renderer;
   try {
     var world = World.build({ swell: params.surf, swellDir: params.windDir });
-    renderer = new Ocean.Renderer(cv, params, world);
+    var life = new Life.Ecosystem(world, 7);
+    renderer = new Ocean.Renderer(cv, params, world, { life: life });
+    life.ground = function (x, z) { return renderer.reefGround(x, z, cam ? cam.pos : null); };
   } catch (e) {
     document.getElementById("msg-text").textContent = e.message + " Try a recent Chrome, Edge, Firefox or Safari.";
     document.getElementById("msg").hidden = false;

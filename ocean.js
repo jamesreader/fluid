@@ -557,6 +557,23 @@
     "}",
   ].join("\n");
 
+  // Coral rock up close: lumps, knobs and crevices on reef ground, with finer
+  // octaves switched on as the camera approaches (the heightfield's 2 m
+  // texels would otherwise leave smooth domes).
+  var C_CORALROCK = [
+    "uniform vec2 uOffR;",
+    "float coralLump(vec2 p, float coral, float dist) {",
+    "  if (coral < 0.05) return 0.0;",
+    "  float fade = 1.0 - smoothstep(30.0, 55.0, dist);",
+    "  if (fade <= 0.0) return 0.0;",
+    "  vec2 q = p + uOffR;",
+    "  float l = (vnoise(q * 0.55) - 0.5) * 1.0 + (vnoise(q * 1.7 + 3.1) - 0.5) * 0.45;",
+    "  l += (vnoise(q * 4.6 + 7.7) - 0.5) * 0.18 * (1.0 - smoothstep(6.0, 18.0, dist));",
+    "  l += (vnoise(q * 11.0 + 1.3) - 0.5) * 0.07 * (1.0 - smoothstep(3.0, 9.0, dist));",
+    "  return l * smoothstep(0.05, 0.5, coral) * fade;",
+    "}",
+  ].join("\n");
+
   // Ground shading shared by the terrain pass and the floor seen through the water.
   var C_WATER = [
     "uniform vec3 uSigT, uSigS;",   // extinction / scattering per metre
@@ -666,8 +683,11 @@
     "  wet = h < 0.0 ? 1.0 : (1.0 - smoothstep(0.6, 2.2, h)) * (1.0 - smoothstep(4.0, 14.0, -wd.z));",
     "  if (h < 0.0) {",
     "    float cm = smoothstep(0.25, 0.75, wd.y * (0.75 + 0.6 * vnoise(w * 0.21)));",
-    "    vec3 coral = mix(vec3(0.34, 0.24, 0.27), vec3(0.50, 0.38, 0.18), vnoise(w * 0.37)) * (0.45 + 0.7 * vnoise(w * 1.6 + 3.0));",
-    "    coral = mix(coral, vec3(0.20, 0.33, 0.28), smoothstep(0.6, 0.9, vnoise(w * 0.9 + 9.0)));",
+    // coral rock: tan, mauve and ochre, with patches of green algae
+    "    vec3 coral = mix(vec3(0.56, 0.47, 0.38), vec3(0.50, 0.38, 0.44), vnoise(w * 0.37));",
+    "    coral = mix(coral, vec3(0.62, 0.50, 0.26), smoothstep(0.55, 0.85, vnoise(w * 0.8 + 5.0)));",
+    "    coral *= 0.6 + 0.55 * vnoise(w * 1.6 + 3.0) * (0.7 + 0.3 * vnoise(w * 6.0));",
+    "    coral = mix(coral, vec3(0.28, 0.40, 0.24), smoothstep(0.62, 0.9, vnoise(w * 0.9 + 9.0)) * 0.8);",
     "    return mix(sand, coral, cm);",
     "  }",
     "  vec3 land = mix(sand, sand * vec3(0.6, 0.6, 0.64), wet);",
@@ -831,7 +851,7 @@
     "    col = inscatter(0.5 * max(-uCam.y, 0.0) + 1.0);",
     "  }",
     "  if (any(isnan(col))) col = vec3(0.0);",
-    "  o = vec4(min(col, vec3(3e4)), 1.0);",
+    "  o = vec4(min(col, vec3(3e4)), 0.0);",
     "}",
   ].join("\n");
 
@@ -861,6 +881,8 @@
   var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
     "uniform sampler2D uProbe;",
     "uniform float uFoamStr;",
+    "uniform sampler2D uSceneCopy;",   // opaque scene; alpha = distance of objects (0 = terrain/sky)
+    "uniform vec2 uInvRes;",
     "in vec2 vXZ;",
     "in vec3 vPos;",
     "out vec4 o;",
@@ -910,6 +932,10 @@
     "    float turbid = smoothstep(0.45, 1.15, sw.s) * sat(sw.H * 2.5) * 0.6;",
     "    vec3 milk = vec3(0.32, 0.6, 0.56) * (uSunCol * max(dot(N, uSunDir), 0.0) * shadow * 0.85 + skyIrradiance() * (0.4 + 0.3 * N.y)) / PI;",
     "    refr = mix(refr, milk, turbid);",
+    // corals, fish, floating things: whatever was drawn behind this pixel,
+    // looked at through the surface (offset by the normal like a refraction)
+    "    vec4 so = texture(uSceneCopy, gl_FragCoord.xy * uInvRes + N.xz * (0.05 / (1.0 + dist * 0.04)));",
+    "    if (so.a > dist + 0.03 && so.a - dist < t * 1.3 + 1.0) refr = mix(throughWater(so.rgb, so.a - dist, 0.5 * max(-hit.y, 0.0)), milk, turbid);",
     "    col = mix(refr, refl, F);",
     // sun glint (GGX)
     "    vec3 H = normalize(V + uSunDir);",
@@ -957,18 +983,20 @@
 
   // Terrain: the same camera-centred grid, lifted to the island heightfield at
   // the mip level matching each cell.
-  var VS_TERRAIN = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + [
+  var VS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_WORLD + "\n" + C_CORALROCK + "\n" + [
     "in vec2 aPos;",
     "in float aCell;",
     "uniform mat4 uViewProj;",
     "out vec3 vPos;",
     "void main() {",
-    "  float h = worldAt(aPos, clamp(log2(aCell / 2.0), 0.0, 8.0)).x;",
+    "  vec4 wd = worldAt(aPos, clamp(log2(aCell / 2.0), 0.0, 8.0));",
+    "  float h = wd.x;",
+    "  h += coralLump(aPos, wd.y, distance(aPos, uCam.xz)) * smoothstep(-0.2, -0.8, h);",   // fades in with depth: no step at the edge
     "  vPos = vec3(aPos.x, h, aPos.y);",
     "  gl_Position = uViewProj * vec4(vPos, 1.0);",
     "}",
   ].join("\n");
-  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + [
+  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_CORALROCK + "\n" + [
     "uniform sampler2D uProbe;",
     "in vec3 vPos;",
     "out vec4 o;",
@@ -984,8 +1012,18 @@
     "  vec4 wd = worldAt(P.xz, 0.0);",
     "  vec2 w = P.xz + uOffD;",
     "  vec3 n = groundNormal(P.xz, lod);",
+    "  float lump = 0.0;",
+    "  if (wd.x < -0.2 && wd.y > 0.05) {",          // coral rock relief, shaded from the same function
+    "    float dr = distance(P.xz, uCam.xz), e = 0.12 + dr * 0.01;",
+    "    float dw = smoothstep(-0.2, -0.8, wd.x);",
+    "    lump = coralLump(P.xz, wd.y, dr) * dw;",
+    "    float lx = (coralLump(P.xz + vec2(e, 0.0), wd.y, dr) - coralLump(P.xz - vec2(e, 0.0), wd.y, dr)) * dw;",
+    "    float lz = (coralLump(P.xz + vec2(0.0, e), wd.y, dr) - coralLump(P.xz - vec2(0.0, e), wd.y, dr)) * dw;",
+    "    n = normalize(n + vec3(-lx, 0.0, -lz) / (2.0 * e));",
+    "  }",
     "  float wet;",
     "  vec3 alb = groundAlbedo(w, wd, n, wet);",
+    "  alb *= 1.0 + clamp(lump * 1.2, -0.45, 0.2);",   // crevices darker, knobs lighter
     // sand the swash just ran over stays dark and glossy for a few seconds
     "  Surf sw = shoreWave(P.xz, 0.0);",
     "  if (wd.x > 0.0 && sw.H > 0.0) {",
@@ -1005,7 +1043,7 @@
     "  if (under) col = throughWater(col, dist, 0.5 * (max(-uCam.y, 0.0) + z));",
     "  else col = aerial(col, -V, dist);",
     "  if (any(isnan(col))) col = vec3(0.0);",
-    "  o = vec4(min(col, vec3(3e4)), 1.0);",
+    "  o = vec4(min(col, vec3(3e4)), 0.0);",
     "}",
   ].join("\n");
 
@@ -1070,7 +1108,7 @@
     "  bool frond = vKind > 0.5 && vKind < 1.5;",
     "  if (frond && leafGap(vUV)) discard;",
     "  vec3 n = normalize(vN);",
-    "  if (!gl_FrontFacing) n = -n;",
+    "  if (frond && dot(n, uCam - vPos) < 0.0) n = -n;",   // fronds are two-sided; solids keep their outward normals
     "  vec3 P = vPos, toEye = uCam - P;",
     "  float dist = length(toEye);",
     "  vec3 V = toEye / dist;",
@@ -1105,7 +1143,7 @@
     "  col += alb * uSunCol * trans * 0.25 * pow(sat(dot(-V, uSunDir)), 4.0) * vis / PI * 3.0;",
     "  col = aerialP(col, -V, dist);",
     "  if (any(isnan(col))) col = vec3(0.0);",
-    "  o = vec4(min(col, vec3(3e4)), 1.0);",
+    "  o = vec4(min(col, vec3(3e4)), 0.0);",
     "}",
   ].join("\n");
   var FS_PLANT_SHADOW = HEAD + C_COMMON + "\n" + C_LEAF + "\n" + [
@@ -1115,6 +1153,152 @@
     "out vec4 o;",
     "void main() {",
     "  if (vKind > 0.5 && vKind < 1.5 && leafGap(vUV)) discard;",
+    "  o = vec4(1.0);",
+    "}",
+  ].join("\n");
+
+  // Reef life and other objects: instanced meshes with a per-instance
+  // position + scale, rotation quaternion, and four parameters (seed, ...).
+  var VS_THING = HEAD + C_COMMON + "\n" + [
+    "in vec3 aPos;",
+    "in vec3 aNrm;",
+    "in vec2 aUV;",
+    "in float aKind;",
+    "in vec4 aInst0;",
+    "in vec4 aInst1;",
+    "in vec4 aInst2;",
+    "uniform mat4 uViewProj;",
+    "uniform float uObjKind, uGrowR;",
+    "out vec3 vPos, vN, vLocal;",
+    "out vec2 vUV;",
+    "out float vPart;",
+    "out vec4 vParams;",
+    "vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }",
+    "void main() {",
+    "  vec3 p = aPos, n = aNrm;",
+    "  float k = uObjKind, seed = aInst2.x;",
+    "  if (k > 2.5 && k < 4.5) p.xz += vec2(0.06, 0.03) * sin(uTime * 0.9 + seed * 6.0) * p.y * p.y;",   // surge sways fans and soft corals
+    "  if (k > 9.5 && k < 10.5) {",                    // fish: a wave travels down the body, growing to the tail
+    "    float along = sat((0.45 - p.x) / 1.15);",
+    "    p.z += sin(uTime * aInst2.z + aInst2.w - p.x * 7.0) * 0.1 * along * along;",
+    "  } else if (k > 10.5 && k < 11.5) {",           // turtle: front flippers beat, rear ones steer
+    "    float ph = uTime * 1.3 + aInst2.w;",
+    "    if (aKind > 1.5 && aKind < 3.5) { float r = max(abs(p.z) - 0.28, 0.0); p.y += sin(ph) * 0.32 * r; p.x += cos(ph) * 0.18 * r; }",
+    "    else if (aKind > 3.5) { float r = max(length(p.xz - vec2(-0.32, 0.0)) - 0.2, 0.0); p.y += sin(ph * 0.7 + 1.0) * 0.25 * r; }",
+    "  } else if (k > 11.5 && k < 12.5) {",           // eagle ray: wing beats ripple out to the tips
+    "    float az = abs(p.z);",
+    "    if (aKind < 0.5) p.y += sin(uTime * 1.1 + aInst2.w - az * 1.4) * 0.28 * pow(az, 1.6);",
+    "    else p.z += sin(uTime * 2.0 + p.x * 3.0) * 0.06 * (-p.x);",
+    "  }",
+    "  float s = aInst0.w;",
+    "  if (uGrowR > 0.0) s *= smoothstep(uGrowR, uGrowR * 0.72, distance(aInst0.xz, uCam.xz));",   // grow in as you approach
+    "  vPos = aInst0.xyz + qrot(aInst1, p * s);",
+    "  vN = qrot(aInst1, n); vLocal = p; vUV = aUV; vPart = aKind; vParams = aInst2;",
+    "  gl_Position = uViewProj * vec4(vPos, 1.0);",
+    "}",
+  ].join("\n");
+  var FS_THING = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + [
+    "uniform sampler2D uProbe;",
+    "uniform float uObjKind;",
+    "in vec3 vPos, vN, vLocal;",
+    "in vec2 vUV;",
+    "in float vPart;",
+    "in vec4 vParams;",
+    "out vec4 o;",
+    "vec3 pick3(float t, vec3 a, vec3 b, vec3 c) { return t < 0.33 ? a : t < 0.66 ? b : c; }",
+    "void main() {",
+    "  int k = int(uObjKind + 0.5);",
+    "  float seed = vParams.x;",
+    "  vec3 n = normalize(vN);",
+    "  vec3 P = vPos, toEye = uCam - P;",
+    "  if ((k == 3 || k == 4) && dot(n, toEye) < 0.0) n = -n;",   // fans and open tubes are seen from both sides
+    "  float dist = length(toEye);",
+    "  vec3 lp = vLocal * 3.0 + seed * 17.0;",
+    "  vec3 alb;",
+    "  if (k == 0) {",                                 // brain coral: meandering ridges
+    "    alb = pick3(seed, vec3(0.50, 0.42, 0.20), vec3(0.34, 0.44, 0.24), vec3(0.52, 0.36, 0.30));",
+    "    float m = sin((vnoise(lp.xz * 1.3) * 9.0 + vnoise(lp.xz * 2.7 + lp.y) * 4.0) * 3.1);",
+    "    alb *= 0.7 + 0.35 * m;",
+    "    n = normalize(n + 0.25 * vec3(cos(m * 3.0), 0.0, sin(m * 3.0)) * (1.0 - smoothstep(4.0, 15.0, dist)));",
+    "  } else if (k == 1) {",                          // staghorn: pale growing tips
+    "    alb = pick3(seed, vec3(0.48, 0.34, 0.22), vec3(0.38, 0.28, 0.36), vec3(0.42, 0.40, 0.24));",
+    "    alb = mix(alb, vec3(0.80, 0.74, 0.62), smoothstep(0.75, 1.0, vUV.y));",
+    "    alb *= 0.85 + 0.3 * vnoise(lp.xy * 8.0);",
+    "  } else if (k == 2) {",                          // table coral: polyp-speckled plate
+    "    alb = pick3(seed, vec3(0.42, 0.40, 0.24), vec3(0.32, 0.38, 0.30), vec3(0.50, 0.40, 0.28));",
+    "    alb *= 0.75 + 0.4 * vnoise(lp.xz * 9.0) * (vPart > 1.5 ? 0.5 : 1.0);",
+    "    if (vPart > 1.5) { alb *= 0.85; n = normalize(n + vec3(0.0, 0.9, 0.0)); }",   // underside: lit by light bounced off the sand
+    "  } else if (k == 3) {",                          // sea fan: an open lattice
+    "    float u = vUV.x * 10.0, v = vUV.y * 13.0;",
+    "    float gx = abs(fract(u + v * 0.35 + 0.15 * sin(v * 2.0)) - 0.5), gy = abs(fract(v + u * 0.2) - 0.5);",
+    "    if (min(gx, gy) > 0.14 && abs(vUV.x) > 0.04 && fwidth(u) < 0.45) discard;",
+    "    alb = pick3(seed, vec3(0.50, 0.10, 0.36), vec3(0.62, 0.48, 0.10), vec3(0.55, 0.16, 0.14));",
+    "  } else if (k == 4) {",                          // soft coral / tube sponges
+    "    alb = pick3(seed, vec3(0.78, 0.36, 0.10), vec3(0.80, 0.66, 0.16), vec3(0.66, 0.30, 0.46));",
+    "    alb *= 0.8 + 0.35 * vnoise(vec2(vUV.x * 12.0, vUV.y * 20.0) + seed * 9.0);",
+    "    if (vUV.y > 0.97) alb *= 0.35;",                // dark open mouths
+    "  } else if (k == 5) {",                          // boulder coral: pitted dome
+    "    alb = pick3(seed, vec3(0.52, 0.46, 0.26), vec3(0.42, 0.42, 0.36), vec3(0.46, 0.38, 0.30));",
+    "    alb *= 0.7 + 0.45 * vnoise(lp.xz * 14.0 + lp.y * 7.0);",
+    "  } else if (k == 10) {",                         // reef fish by species
+    "    int sp = int(vParams.y + 0.5);",
+    "    float t = vUV.x, top = cos(vUV.y * TAU), belly = smoothstep(0.2, -0.6, top);",
+    "    if (sp == 0) alb = vec3(0.95, 0.76, 0.06);",
+    "    else if (sp == 1) alb = mix(vec3(0.05, 0.32, 0.68), vec3(0.45, 0.72, 0.85), belly);",
+    "    else if (sp == 2) {",
+    "      alb = mix(vec3(0.78, 0.72, 0.22), vec3(0.92, 0.92, 0.80), belly);",
+    "      if (t > 0.14 && t < 0.86 && fract(t * 5.2) > 0.62 && top > -0.55) alb *= 0.12;",   // black bars
+    "    } else if (sp == 3) {",
+    "      alb = mix(vec3(0.10, 0.55, 0.50), vec3(0.40, 0.78, 0.66), belly);",
+    "      alb = mix(alb, vec3(0.88, 0.46, 0.56), smoothstep(0.55, 0.75, vnoise(vec2(t * 6.0, vUV.y * 8.0) + seed * 20.0)));",
+    "    } else if (sp == 4) {",
+    "      alb = mix(vec3(0.92, 0.92, 0.88), vec3(0.96, 0.80, 0.10), smoothstep(0.45, 0.7, t));",
+    "      if (t > 0.09 && t < 0.17) alb *= 0.12;",       // eye band
+    "    } else alb = mix(vec3(0.22, 0.32, 0.42), vec3(0.85, 0.88, 0.90), belly);",
+    "    if (vPart < 0.5 && t < 0.1 && abs(top) < 0.45 && t > 0.05) alb = vec3(0.03);",   // eye
+    "    if (vPart > 0.5) { alb *= 0.85; if (dot(n, toEye) < 0.0) n = -n; }",
+    "  } else if (k == 11) {",                         // green turtle
+    "    if (vPart < 0.5) {",
+    "      float sc = vnoise(vLocal.xz * 9.0 + seed * 30.0);",
+    "      alb = mix(vec3(0.26, 0.20, 0.10), vec3(0.50, 0.40, 0.20), smoothstep(0.3, 0.7, sc));",
+    "      alb *= 0.75 + 0.35 * smoothstep(0.15, 0.4, abs(fract(sc * 3.0) - 0.5));",   // dark seams between scutes
+    "    } else {",
+    "      alb = mix(vec3(0.40, 0.40, 0.28), vec3(0.70, 0.64, 0.44), smoothstep(-0.2, -0.8, n.y));",
+    "      alb *= 0.75 + 0.4 * vnoise(vLocal.xz * 30.0);",
+    "      if (dot(n, toEye) < 0.0) n = -n;",
+    "    }",
+    "  } else if (k == 12) {",                         // spotted eagle ray: dark back, white spots, white belly
+    "    bool below = dot(n, toEye) < 0.0;",
+    "    if (below) { n = -n; alb = vec3(0.86, 0.86, 0.82); }",
+    "    else {",
+    "      alb = vec3(0.09, 0.11, 0.15);",
+    "      if (vnoise(vUV * vec2(26.0, 9.0) + seed * 40.0) > 0.78) alb = vec3(0.86, 0.86, 0.80);",
+    "    }",
+    "    if (vPart > 0.5) alb = vec3(0.06);",
+    "  } else alb = vec3(0.5);",
+    "  float z = max(-P.y, 0.0);",
+    "  float shadow = terrainShadow(P, 0.0) * sunVis(P + n * 0.05, 0.002);",
+    "  vec3 col = lightGround(P, n, alb, z, dist, shadow);",
+    "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
+    "  if (under) col = throughWater(col, dist, 0.5 * (max(-uCam.y, 0.0) + z));",
+    "  if (any(isnan(col))) col = vec3(0.0);",
+    // alpha carries the distance so the water can look through its surface at us
+    "  o = vec4(min(col, vec3(3e4)), under ? 0.0 : dist);",
+    "}",
+  ].join("\n");
+  var FS_THING_SHADOW = HEAD + C_COMMON + "\n" + [
+    "uniform float uObjKind;",
+    "in vec3 vPos, vN, vLocal;",
+    "in vec2 vUV;",
+    "in float vPart;",
+    "in vec4 vParams;",
+    "out vec4 o;",
+    "void main() {",
+    "  if (int(uObjKind + 0.5) == 3) {",
+    "    float u = vUV.x * 10.0, v = vUV.y * 13.0;",
+    "    float gx = abs(fract(u + v * 0.35 + 0.15 * sin(v * 2.0)) - 0.5), gy = abs(fract(v + u * 0.2) - 0.5);",
+    "    if (min(gx, gy) > 0.14 && abs(vUV.x) > 0.04) discard;",
+    "  }",
     "  o = vec4(1.0);",
     "}",
   ].join("\n");
@@ -1292,7 +1476,8 @@
 
   // ========================================================== the renderer
   // world: an island from World.build() (world.js).
-  function Renderer(canvas, params, world) {
+  // opts.life: a Life.Ecosystem (life.js) to draw the reef's animals.
+  function Renderer(canvas, params, world, opts) {
     var gl = canvas.getContext("webgl2", { antialias: false, alpha: false, depth: false, powerPreference: "high-performance", preserveDrawingBuffer: false });
     if (!gl) throw new Error("This browser has no WebGL2, which the ocean needs.");
     var cbf = gl.getExtension("EXT_color_buffer_float");
@@ -1323,6 +1508,8 @@
     this.progTerrain = mk(VS_TERRAIN, FS_TERRAIN, "terrain");
     this.progPlant = mk(VS_PLANT, FS_PLANT, "plants");
     this.progPlantShadow = mk(VS_PLANT, FS_PLANT_SHADOW, "plant shadows");
+    this.progThing = mk(VS_THING, FS_THING, "reef life");
+    this.progThingShadow = mk(VS_THING, FS_THING_SHADOW, "reef life shadows");
     this.progDown = mk(VS_FULL, FS_DOWN, "bloom down");
     this.progUp = mk(VS_FULL, FS_UP, "bloom up");
     this.progComposite = mk(VS_FULL, FS_COMPOSITE, "composite");
@@ -1355,6 +1542,7 @@
 
     // Static textures: random noise and the island.
     var nz = new Uint8Array(256 * 256 * 4), rnd = mulberry32(99);
+    this.noiseData = nz;
     for (var i = 0; i < nz.length; i++) nz[i] = (rnd() * 256) | 0;
     this.noise = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.noise);
@@ -1375,6 +1563,10 @@
     this._buildCausticMesh(384);
     this._buildWaterMesh(this.p.meshDetail);
     this._buildPlants();
+    this._buildReef();
+    // animals (life.js), if the page provided an ecosystem
+    this.life = (opts && opts.life) || null;
+    this.fauna = [this._thingKind(world.fishMesh(), 10, 600), this._thingKind(world.turtleMesh(), 11, 8), this._thingKind(world.rayMesh(), 12, 8)];
     this.shadowMap = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.shadowMap);
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, 2048, 2048);
@@ -1526,6 +1718,118 @@
     }
   };
 
+  // An instanced mesh with a 12-float instance layout (see VS_THING).
+  Renderer.prototype._thingKind = function (mesh, code, maxInst) {
+    var gl = this.gl, vao = gl.createVertexArray(), vb = gl.createBuffer(), ib = gl.createBuffer(), buf = gl.createBuffer();
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
+    [[0, 3, 0], [2, 3, 3], [3, 2, 6], [4, 1, 8]].forEach(function (a) {
+      gl.enableVertexAttribArray(a[0]);
+      gl.vertexAttribPointer(a[0], a[1], gl.FLOAT, false, 36, a[2] * 4);
+    });
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, maxInst * 48, gl.DYNAMIC_DRAW);
+    [5, 6, 7].forEach(function (loc, i) {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 48, i * 16);
+      gl.vertexAttribDivisor(loc, 1);
+    });
+    gl.bindVertexArray(null);
+    return { vao: vao, buf: buf, count: mesh.indices.length, code: code, inst: new Float32Array(maxInst * 12), n: 0, max: maxInst };
+  };
+  Renderer.prototype._drawThings = function (prog, kinds, extra) {
+    var gl = this.gl;
+    kinds.forEach(function (k) {
+      if (!k.n) return;
+      prog.set({ uObjKind: k.code }).set(extra || {});
+      gl.bindVertexArray(k.vao);
+      gl.drawElementsInstanced(gl.TRIANGLES, k.count, gl.UNSIGNED_SHORT, 0, k.n);
+    });
+  };
+
+  // Coral colonies in world-anchored cells around the camera, densest where
+  // the reef mask says coral; they grow in at the edge of the range, so the
+  // reef gains detail as you swim toward it instead of popping.
+  var REEF_TYPES = ["brain", "staghorn", "table", "fan", "soft", "boulder"];
+  Renderer.prototype._buildReef = function () {
+    var meshes = this.world.coralMeshes(7), self = this;
+    this.reef = REEF_TYPES.map(function (name, i) { return self._thingKind(meshes[name], i, 2500); });
+    this.reefKey = null;
+  };
+  function cellHash(i, j, salt) {
+    var h = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(salt, 2246822519);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+  // The shaders' value noise and coral-rock relief, on the CPU, so colonies
+  // and fish sit on the same lumpy surface the GPU draws.
+  Renderer.prototype.vnoise = function (x, y) {
+    var nz = this.noiseData, ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+    // LINEAR filtering of texel centres at (i + f + 0.5) / 256 blends texels i and i+1
+    var i0 = ((ix % 256) + 256) % 256, j0 = ((iy % 256) + 256) % 256, i1 = (i0 + 1) % 256, j1 = (j0 + 1) % 256;
+    var a = nz[(j0 * 256 + i0) * 4], b = nz[(j0 * 256 + i1) * 4], c = nz[(j1 * 256 + i0) * 4], d = nz[(j1 * 256 + i1) * 4];
+    return ((a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy) / 255;
+  };
+  Renderer.prototype.coralLump = function (x, z, coral, h, dist) {
+    if (coral < 0.05 || dist > 55) return 0;
+    var P = 256 / 0.55 * 11, qx = mod(x, P), qz = mod(z, P), vn = this.vnoise.bind(this);
+    function ss(a, b, v) { var t = Math.max(0, Math.min(1, (v - a) / (b - a))); return t * t * (3 - 2 * t); }
+    var l = (vn(qx * 0.55, qz * 0.55) - 0.5) * 1.0 + (vn(qx * 1.7 + 3.1, qz * 1.7 + 3.1) - 0.5) * 0.45;
+    l += (vn(qx * 4.6 + 7.7, qz * 4.6 + 7.7) - 0.5) * 0.18 * (1 - ss(6, 18, dist));
+    l += (vn(qx * 11 + 1.3, qz * 11 + 1.3) - 0.5) * 0.07 * (1 - ss(3, 9, dist));
+    return l * ss(0.05, 0.5, coral) * (1 - ss(30, 55, dist)) * ss(-0.2, -0.8, h);
+  };
+  // Ground height including the coral-rock relief near camera position cam.
+  Renderer.prototype.reefGround = function (x, z, cam) {
+    var w = this.world, h = w.heightAt(w, x, z);
+    if (h > -0.2) return h;
+    var d = cam ? Math.hypot(x - cam[0], z - cam[2]) : 0;
+    return h + this.coralLump(x, z, w.bilinear(w.coral, x, z, 0), h, d);
+  };
+  Renderer.prototype._updateReef = function (camW, O, R) {
+    var w = this.world, CELL = 1.25;
+    var key = Math.round(camW[0] / 1.5) + "," + Math.round(camW[2] / 1.5) + "," + R + "," + O[0].toFixed(2) + "," + O[1].toFixed(2);
+    if (key === this.reefKey) return;
+    this.reefKey = key;
+    var kinds = this.reef, gl = this.gl;
+    kinds.forEach(function (k) { k.n = 0; });
+    var ci0 = Math.floor((camW[0] - R) / CELL), ci1 = Math.ceil((camW[0] + R) / CELL);
+    var cj0 = Math.floor((camW[2] - R) / CELL), cj1 = Math.ceil((camW[2] + R) / CELL);
+    for (var cj = cj0; cj <= cj1; cj++) {
+      for (var ci = ci0; ci <= ci1; ci++) {
+        var r1 = cellHash(ci, cj, 1), r2 = cellHash(ci, cj, 2), r3 = cellHash(ci, cj, 3);
+        var x = (ci + r1) * CELL, z = (cj + r2) * CELL;
+        if ((x - camW[0]) * (x - camW[0]) + (z - camW[2]) * (z - camW[2]) > R * R) continue;
+        var g0 = w.heightAt(w, x, z);
+        if (g0 > -0.5 || g0 < -28) continue;
+        var cm = w.bilinear(w.coral, x, z, 0);
+        // sit on the lumpy rock the GPU draws (at its full-detail relief)
+        var g = g0 + this.coralLump(x, z, cm, g0, Math.hypot(x - camW[0], z - camW[2]));
+        if (r3 > (cm > 0.15 ? 0.2 + 0.65 * cm : 0.01)) continue;
+        var r4 = cellHash(ci, cj, 4), r5 = cellHash(ci, cj, 5), r6 = cellHash(ci, cj, 6), deep = g < -3;
+        // shallow reef: brain, staghorn, table, boulder; deeper: fans and soft corals join
+        var t = deep ? (r4 < 0.15 ? 0 : r4 < 0.3 ? 1 : r4 < 0.4 ? 2 : r4 < 0.6 ? 3 : r4 < 0.8 ? 4 : 5)
+                     : (r4 < 0.25 ? 0 : r4 < 0.5 ? 1 : r4 < 0.72 ? 2 : r4 < 0.8 ? 4 : 5);
+        var k = kinds[t];
+        if (k.n >= k.max) continue;
+        var size = [[0.4, 0.8], [0.5, 0.7], [0.5, 0.75], [0.6, 0.8], [0.45, 0.45], [0.6, 1.2]][t];
+        var sc = size[0] + size[1] * r5, yaw = r6 * TAU, q = k.n * 12;
+        k.inst[q] = x - O[0]; k.inst[q + 1] = g - 0.04; k.inst[q + 2] = z - O[1]; k.inst[q + 3] = sc;
+        k.inst[q + 4] = 0; k.inst[q + 5] = Math.sin(yaw / 2); k.inst[q + 6] = 0; k.inst[q + 7] = Math.cos(yaw / 2);
+        k.inst[q + 8] = cellHash(ci, cj, 7); k.inst[q + 9] = t; k.inst[q + 10] = 0; k.inst[q + 11] = 0;
+        k.n++;
+      }
+    }
+    kinds.forEach(function (k) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, k.buf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12);
+    });
+  };
+
   Renderer.prototype._grid = function (n, attribs) {
     var gl = this.gl, vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1622,6 +1926,9 @@
     gl.bindRenderbuffer(gl.RENDERBUFFER, this.sceneDepth);
     gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
     this.sceneFbo = this._mrt([this.sceneTex], this.sceneDepth);
+    if (this.sceneCopy) { gl.deleteTexture(this.sceneCopy); gl.deleteFramebuffer(this.copyFbo); }
+    this.sceneCopy = this._tex(w, h, gl.RGBA16F, gl.LINEAR, gl.CLAMP_TO_EDGE);
+    this.copyFbo = this._mrt([this.sceneCopy]);
     this.bloom = [];
     var bw = w, bh = h;
     for (var i = 0; i < 6; i++) {
@@ -1733,7 +2040,7 @@
       uSigT: sigT, uSigS: sigS, uSunRefr: sunRefr, uSunTrans: sunTrans,
       uWorld: this.worldTex, uWorldInv: 1 / this.world.SIZE, uMaxH: this.maxH,
       uWorldUV0: [(O[0] + this.world.HALF) / this.world.SIZE, (O[1] + this.world.HALF) / this.world.SIZE],
-      uOffD: [mod(O[0], 4096), mod(O[1], 4096)],
+      uOffD: [mod(O[0], 4096), mod(O[1], 4096)], uOffR: [mod(O[0], 256 / 0.55 * 11), mod(O[1], 256 / 0.55 * 11)],
       uCaustic: this.caustic, uCausL: CAUSTIC_L, uCausDepth: causDepth, uCausStr: p.caustics,
       uShore: this.shoreTex, uShoreK: this.shoreKTex, uSurf: p.surf > 0 ? 1 : 0,
       uShoreWT: [Math.cos(shorePh), Math.sin(shorePh)], uGroupWT: [Math.cos(groupPh), Math.sin(groupPh)],
@@ -1811,6 +2118,21 @@
       gl.bindVertexArray(k.shadow.vao);
       gl.drawElementsInstanced(gl.TRIANGLES, k.shadow.count, gl.UNSIGNED_SHORT, 0, k.shadow.n);
     });
+    // reef life near the camera (only worth drawing from low down)
+    var camW = camera.pos, reefR = camW[1] < 0 ? 42 : camW[1] < 40 ? 32 : 0;
+    if (reefR > 0) this._updateReef(camW, O, reefR); else this.reef.forEach(function (k) { k.n = 0; });
+    // the animals
+    var fauna = this.fauna;
+    if (this.life && reefR > 0) {
+      this.life.update(dt * p.timeScale, camW);
+      fauna[0].n = this.life.writeFish(fauna[0].inst, O, fauna[0].max);
+      fauna[1].n = this.life.writeTurtles(fauna[1].inst, O);
+      fauna[2].n = this.life.writeRays(fauna[2].inst, O);
+      fauna.forEach(function (k) { gl.bindBuffer(gl.ARRAY_BUFFER, k.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12); });
+    } else fauna.forEach(function (k) { k.n = 0; });
+    this.progThingShadow.use().set(common).set({ uViewProj: lightVP, uGrowR: reefR });
+    this._drawThings(this.progThingShadow, this.reef);
+    this._drawThings(this.progThingShadow, fauna, { uGrowR: 0 });
     gl.disable(gl.DEPTH_TEST);
     // world -> shadow texture coordinates (bias matrix folded in)
     var bias = new Float32Array([0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0.5, 0, 0.5, 0.5, 0.5, 1]);
@@ -1833,7 +2155,15 @@
         gl.drawElementsInstanced(gl.TRIANGLES, k[pass].count, gl.UNSIGNED_SHORT, 0, k[pass].n);
       });
     });
-    this.progWater.use().set(common).set({ uViewProj: vp, uFoamStr: p.foam > 0 ? 0.6 + p.foam : 0 });
+    this.progThing.use().set(common).set({ uViewProj: vp, uGrowR: reefR });
+    this._drawThings(this.progThing, this.reef);
+    this._drawThings(this.progThing, fauna, { uGrowR: 0 });
+    // copy the opaque scene so the water can look through itself at objects
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.sceneFbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.copyFbo);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    this._target(this.sceneFbo, w, h);
+    this.progWater.use().set(common).set({ uViewProj: vp, uFoamStr: p.foam > 0 ? 0.6 + p.foam : 0, uSceneCopy: this.sceneCopy, uInvRes: [1 / w, 1 / h] });
     gl.bindVertexArray(this.waterMesh.vao);
     gl.drawElements(gl.TRIANGLES, this.waterMesh.count, gl.UNSIGNED_INT, 0);
     gl.disable(gl.DEPTH_TEST);
