@@ -21,6 +21,9 @@
  *       reef that keeps the lagoon calmer than the open surf beach.
  *   (f) reef life (life.js): coral and animal meshes are valid; fish stay
  *       finite, under water and off the reef, and scatter from a diver.
+ *   (g) play.js: floating objects settle at their Archimedes draught and
+ *       drift with the swell, rocks sink, and the boat planes, turns,
+ *       leaves a wake and throws spray.
  *
  * Exits 0 on pass, non-zero with a FAIL message otherwise.
  */
@@ -181,6 +184,56 @@ console.log("--- (f) reef life ---");
   var d1 = spread();
   if (d1 > d0 + 1) pass("(f) a school scatters from the diver (" + d0.toFixed(1) + " -> " + d1.toFixed(1) + " m in 1 s)");
   else fail("(f) school did not scatter: " + d0.toFixed(2) + " -> " + d1.toFixed(2) + " m");
+})();
+
+/* ------------------------------------------------------------------ (g) */
+console.log("--- (g) floating things and the boat ---");
+(function () {
+  var World = require("./world.js"), Play = require("./play.js");
+  var w = World.build({});
+  // the cap-volume formula integrates to the sphere
+  var r = 0.3, n = 2000, v = 0;
+  for (var i = 0; i < n; i++) { var y = -r + (i + 0.5) / n * 2 * r; v += Math.PI * (r * r - y * y) * (2 * r / n); }
+  var vf = v / (4 / 3 * Math.PI * r * r * r), cf = Play.capFraction(2 * r, r);
+  if (Math.abs(vf - 1) < 1e-3 && Math.abs(cf - 1) < 1e-9 && Math.abs(Play.capFraction(r, r) - 0.5) < 1e-9) pass("(g) submerged-cap volume is right (half at the equator, all at the top)");
+  else fail("(g) capFraction " + cf + " / " + Play.capFraction(r, r));
+  // drop each kind into flat water: it should settle at its Archimedes draught
+  var pg = new Play.Playground(w), t = 0, x0 = 300, z0 = 330;
+  Play.KINDS.forEach(function (K, k) { pg.throwObject(k, [x0 + k * 2, 1.5, z0], [0, 0, 0]); });
+  function sea(x, z, t) { return 0.4 * Math.sin(0.35 * x - 1.85 * t); }
+  for (var f = 0; f < 900; f++) {
+    t += 1 / 60;
+    var pts = pg.probePoints();
+    pg.setProbes(pts.map(function (p) { return t < 6 ? 0 : sea(p[0], p[1], t); }));
+    pg.update(1 / 60, t, [x0, 2, z0], 0);
+    if (Math.abs(t - 5.9) < 1 / 120) {
+      var ok = pg.objects.slice(0, 2).every(function (o) { return Math.abs(o.wet - o.K.density / 1025) < 0.04; });
+      console.log("    settled wet fractions " + pg.objects.map(function (o) { return o.K.name + " " + o.wet.toFixed(3) + " (expect " + Math.min(1, o.K.density / 1025).toFixed(3) + ")"; }).join(", "));
+      if (ok && pg.objects[2].pos[1] < -2) pass("(g) ball and coconut float at their Archimedes draught; the rock sinks");
+      else fail("(g) floating draughts off");
+    }
+  }
+  var drift = pg.objects[0].pos[0] - x0;
+  console.log("    beach ball drift after 9 s of 0.8 m swell: " + drift.toFixed(2) + " m");
+  if (drift > 0.3) pass("(g) the swell carries a floating ball along with it");
+  else fail("(g) ball did not drift with the waves (" + drift.toFixed(2) + " m)");
+  // boat: planes up to speed, turns, stays finite, throws spray and wake
+  var b = pg.spawnBoat(280, 300, 0), maxV = 0, finite = true, drops = 0, spray = 0;
+  b.throttle = 1;
+  for (f = 0; f < 900; f++) {
+    t += 1 / 60;
+    var pts2 = pg.probePoints();
+    pg.setProbes(pts2.map(function () { return 0; }));
+    if (f === 600) b.steer = 1;
+    pg.update(1 / 60, t, b.pos, 0);
+    drops += pg.takeDrops().length;
+    maxV = Math.max(maxV, Math.hypot(b.vel[0], b.vel[2]));
+    spray = Math.max(spray, pg.pN);
+    if (![b.pos[0], b.pos[1], b.pos[2], b.pitch, b.roll, b.hdg].every(isFinite)) finite = false;
+  }
+  console.log("    boat top speed " + (maxV * 1.944).toFixed(0) + " kn, heading after turning " + (b.hdg * 180 / Math.PI).toFixed(0) + " deg, wake drops " + drops + ", spray up to " + spray + " drops in the air");
+  if (finite && maxV > 8 && maxV < 22 && b.hdg > 0.5 && drops > 1000 && spray > 50) pass("(g) the boat planes, turns, leaves a wake and throws spray");
+  else fail("(g) boat: finite " + finite + ", top " + maxV.toFixed(1) + " m/s, heading " + b.hdg.toFixed(2) + ", drops " + drops + ", spray " + pg.pN);
 })();
 
 console.log("");

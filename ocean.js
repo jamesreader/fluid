@@ -537,6 +537,64 @@
     "}",
   ].join("\n");
 
+  // Interactive ripples: a wave-equation height field on a 102 m grid that
+  // follows the camera, added on top of the ocean (r height, g velocity,
+  // b foam). Zero outside the grid.
+  var C_RIPPLE = [
+    "uniform sampler2D uRip;",
+    "uniform vec2 uRipC;",          // O-relative centre of the grid
+    "uniform float uRipSize;",      // metres across
+    "vec2 ripUV(vec2 p) { return (p - uRipC) / uRipSize + 0.5; }",
+    "float ripMask(vec2 uv) { vec2 e = min(uv, 1.0 - uv); return smoothstep(0.0, 0.06, min(e.x, e.y)); }",
+    "vec4 ripple(vec2 p) { vec2 uv = ripUV(p); return textureLod(uRip, uv, 0.0) * ripMask(uv); }",
+    "vec2 rippleSlope(vec2 p) {",
+    "  float e = uRipSize / float(textureSize(uRip, 0).x);",
+    "  return vec2(ripple(p + vec2(e, 0.0)).r - ripple(p - vec2(e, 0.0)).r, ripple(p + vec2(0.0, e)).r - ripple(p - vec2(0.0, e)).r) / (2.0 * e);",
+    "}",
+  ].join("\n");
+  var FS_RIPPLE = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + [
+    "uniform sampler2D uRipPrev;",
+    "uniform ivec2 uShift;",        // texels the grid moved since last step
+    "uniform vec2 uRipC;",
+    "uniform float uCell, uDt, uCmax;",
+    "uniform vec4 uDrops[24];",     // x, z (O-relative), radius, velocity kick
+    "uniform float uDropFoam[24];",
+    "uniform int uNDrops;",
+    "out vec4 o;",
+    "vec4 at(ivec2 q) {",
+    "  ivec2 n = textureSize(uRipPrev, 0);",
+    "  if (q.x < 0 || q.y < 0 || q.x >= n.x || q.y >= n.y) return vec4(0.0);",
+    "  return texelFetch(uRipPrev, q, 0);",
+    "}",
+    "void main() {",
+    "  ivec2 p = ivec2(gl_FragCoord.xy), q = p + uShift, n = textureSize(uRipPrev, 0);",
+    "  vec4 c = at(q);",
+    "  float h = c.r, v = c.g, foam = c.b;",
+    "  vec2 pos = uRipC + (vec2(p) + 0.5 - 0.5 * vec2(n)) * uCell;",
+    "  float depth = -worldAt(pos, 0.0).x;",
+    "  if (depth < 0.06) { o = vec4(0.0, 0.0, foam * 0.97, 1.0); return; }",   // the shore reflects
+    "  float cc = min(uCmax, sqrt(9.81 * depth));",
+    "  float lap = (at(q + ivec2(1, 0)).r + at(q - ivec2(1, 0)).r + at(q + ivec2(0, 1)).r + at(q - ivec2(0, 1)).r - 4.0 * h) / (uCell * uCell);",
+    "  v += cc * cc * lap * uDt;",
+    "  for (int i = 0; i < 24; i++) {",
+    "    if (i >= uNDrops) break;",
+    "    vec4 d = uDrops[i];",
+    "    float w = exp(-dot(pos - d.xy, pos - d.xy) / (d.z * d.z));",
+    "    v += d.w * w; foam += uDropFoam[i] * w;",
+    "  }",
+    // absorbing border, gentle loss everywhere
+    "  vec2 e = min(vec2(p), vec2(n) - 1.0 - vec2(p)) / float(n.x);",
+    "  float border = smoothstep(0.07, 0.0, min(e.x, e.y));",
+    "  v *= exp(-uDt * (0.35 + 9.0 * border));",
+    "  h *= exp(-uDt * (0.04 + 9.0 * border));",
+    "  h += v * uDt;",
+    // steep, fast ripples whiten
+    "  foam += max(abs(v) - 0.6, 0.0) * uDt * 3.0;",
+    "  foam = min(foam * exp(-uDt * 0.4), 2.5);",
+    "  o = vec4(h, v, foam, 1.0);",
+    "}",
+  ].join("\n");
+
   // Sun shadow map of palms, trees and objects near the camera (ortho, follows
   // the camera); outside it everything counts as lit.
   var C_SHADOW = [
@@ -758,7 +816,8 @@
 
   // Water height under the camera, written to a 1x1 texture each frame so
   // every later pass knows whether the eye is above or below the surface.
-  var FS_PROBE = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + [
+  var FS_PROBE = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + [
+    "uniform vec2 uProbePts[64];",   // O-relative; texel 0 is always the camera
     "out vec4 o;",
     // invert the horizontal displacement, then read the height there
     "float surfaceAt(vec2 xz) {",
@@ -767,9 +826,13 @@
     "    vec3 f = depthFade(-worldAt(p, 0.0).x);",
     "    p = xz - oceanDispF(p, vec3(0.0), f).xz - shoreWave(p, 0.0).d.xz;",
     "  }",
-    "  return oceanDispF(p, vec3(0.0), depthFade(-worldAt(p, 0.0).x)).y + shoreWave(p, 0.0).d.y;",
+    "  return oceanDispF(p, vec3(0.0), depthFade(-worldAt(p, 0.0).x)).y + shoreWave(p, 0.0).d.y + ripple(p).r;",
     "}",
-    "void main() { o = vec4(surfaceAt(uCam.xz), 0.0, 0.0, 1.0); }",
+    "void main() {",
+    "  int i = int(gl_FragCoord.x);",
+    "  vec2 xz = i == 0 ? uCam.xz : uProbePts[i];",
+    "  o = vec4(surfaceAt(xz), 0.0, 0.0, 1.0);",
+    "}",
   ].join("\n");
 
   var FS_ENV = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_CLOUDS + "\n" + [
@@ -858,7 +921,7 @@
   // Surface mesh: a camera-centred grid whose cells grow exponentially with
   // distance. Each vertex reads displacement at the mip level matching its
   // cell size, so waves too short for the mesh fade out instead of aliasing.
-  var VS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + [
+  var VS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + [
     "in vec2 aPos;",
     "in float aCell;",
     "uniform mat4 uViewProj;",
@@ -871,6 +934,7 @@
     "  float depth = -worldAt(aPos, wl).x;",
     "  vec4 d = oceanDispF(aPos, lod, depthFade(depth));",
     "  d.xyz += shoreWave(aPos, wl).d;",
+    "  d.y += ripple(aPos).r * (1.0 - smoothstep(0.3, 0.8, aCell));",
     "  vec3 P = vec3(aPos.x + d.x, d.y, aPos.y + d.z);",
     "  vXZ = aPos;",
     "  vPos = P;",
@@ -878,7 +942,7 @@
     "}",
   ].join("\n");
 
-  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
+  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
     "uniform sampler2D uProbe;",
     "uniform float uFoamStr;",
     "uniform sampler2D uSceneCopy;",   // opaque scene; alpha = distance of objects (0 = terrain/sky)
@@ -898,8 +962,10 @@
     "  vec4 g = texture(uDer0, uv0) * fd.x + texture(uDer1, uv1) * fd.y + texture(uDer2, uv2) * fd.z;",
     "  Surf sw = shoreWave(vXZ, 0.0);",
     // surface normal from both tangent vectors (handles the folded lip too)
-    "  vec3 Tx = vec3(1.0 + g.z + sw.jac.x, g.x + sw.slope.x, sw.jac.w);",
-    "  vec3 Tz = vec3(sw.jac.z, g.y + sw.slope.y, 1.0 + g.w + sw.jac.y);",
+    "  vec2 rs = rippleSlope(vXZ);",
+    "  float ripFoam = ripple(vXZ).b;",
+    "  vec3 Tx = vec3(1.0 + g.z + sw.jac.x, g.x + sw.slope.x + rs.x, sw.jac.w);",
+    "  vec3 Tz = vec3(sw.jac.z, g.y + sw.slope.y + rs.y, 1.0 + g.w + sw.jac.y);",
     "  vec3 N = normalize(cross(Tz, Tx));",
     "  if (N.y < 0.05) N = normalize(vec3(N.x, 0.05, N.z));",
     "  float foam = texture(uDisp0, uv0).w * fd.x + texture(uDisp1, uv1).w * fd.y + 0.5 * texture(uDisp2, uv2).w * fd.z;",
@@ -955,6 +1021,7 @@
     "    float film = P.y - groundH(P.xz);",
     "    float edge = smoothstep(0.0, 0.03, film) * (1.0 - smoothstep(0.04, 0.16, film)) * step(1.5, sw.s);",
     "    float surf = sat(sw.foam * 1.8 - 0.3 + (lace - 0.5) * 1.2) + edge * smoothstep(0.45, 0.65, lace) * 0.8;",
+    "    surf = max(surf, sat(ripFoam * 1.4 - 0.35 + (lace - 0.5) * 2.2));",   // wakes and splashes: lacy, solid only where churned
     "    float m = max(smoothstep(0.25, 0.95, foam * (0.5 + 0.9 * vnoise((vXZ + uOffD) * 2.0)) * uFoamStr), sat(surf));",
     "    vec3 foamCol = 0.85 * (uSunCol * max(dot(N, uSunDir), 0.0) * shadow + skyIrradiance()) / PI;",
     "    col = mix(col, foamCol, m);",
@@ -1275,6 +1342,24 @@
     "      if (vnoise(vUV * vec2(26.0, 9.0) + seed * 40.0) > 0.78) alb = vec3(0.86, 0.86, 0.80);",
     "    }",
     "    if (vPart > 0.5) alb = vec3(0.06);",
+    "  } else if (k == 20) {",                         // beach ball: six panels, white caps
+    "    float sl = floor(fract(atan(vLocal.z, vLocal.x) / TAU + seed) * 6.0);",
+    "    alb = sl < 1.0 ? vec3(0.85, 0.08, 0.06) : sl < 2.0 ? vec3(0.92) : sl < 3.0 ? vec3(0.06, 0.25, 0.80) : sl < 4.0 ? vec3(0.95, 0.80, 0.05) : sl < 5.0 ? vec3(0.92) : vec3(0.10, 0.65, 0.22);",
+    "    if (abs(vLocal.y) > 0.88) alb = vec3(0.92);",
+    "  } else if (k == 21) {",                         // coconut husk
+    "    alb = vec3(0.36, 0.24, 0.12) * (0.7 + 0.5 * vnoise(vec2(atan(vLocal.z, vLocal.x) * 12.0, vLocal.y * 40.0)));",
+    "  } else if (k == 22) {",                         // basalt rock
+    "    alb = vec3(0.16, 0.15, 0.14) * (0.7 + 0.6 * vnoise(vLocal.xz * 9.0 + vLocal.y * 5.0));",
+    "  } else if (k == 23) {",                         // the boat
+    "    int part = int(vPart + 0.5);",
+    "    if (part == 0) {",
+    "      alb = vec3(0.88, 0.88, 0.86);",
+    "      if (vLocal.y < 0.12 && vLocal.y > -0.03) alb = vec3(0.04, 0.12, 0.30);",   // boot stripe
+    "      else if (vLocal.y <= -0.03) alb = vec3(0.12, 0.26, 0.40);",                // bottom paint
+    "    } else if (part == 2) alb = vec3(0.50, 0.33, 0.18) * (0.8 + 0.25 * step(0.5, fract(vLocal.z * 9.0)));",   // teak
+    "    else if (part == 3) alb = vec3(0.90, 0.90, 0.88);",
+    "    else if (part == 4) alb = vec3(0.05, 0.05, 0.06);",
+    "    else alb = vec3(0.04, 0.05, 0.06);",
     "  } else alb = vec3(0.5);",
     "  float z = max(-P.y, 0.0);",
     "  float shadow = terrainShadow(P, 0.0) * sunVis(P + n * 0.05, 0.002);",
@@ -1300,6 +1385,41 @@
     "    if (min(gx, gy) > 0.14 && abs(vUV.x) > 0.04) discard;",
     "  }",
     "  o = vec4(1.0);",
+    "}",
+  ].join("\n");
+
+  // Spray: camera-facing soft sprites, stretched along their velocity.
+  var VS_SPRAY = HEAD + C_COMMON + "\n" + [
+    "in vec4 aInst0;",       // x, y, z, size
+    "in vec4 aInst1;",       // vx, vy, vz, alpha
+    "uniform mat4 uViewProj;",
+    "uniform vec3 uCamRight, uCamUp;",
+    "out vec2 vQ;",
+    "out float vA;",
+    "void main() {",
+    "  int c = gl_VertexID % 6;",
+    "  vec2 q = vec2(c == 1 || c == 2 || c == 4 ? 1.0 : -1.0, c >= 2 && c <= 4 ? 1.0 : -1.0);",
+    "  vec3 v = aInst1.xyz, P = aInst0.xyz;",
+    "  vec3 vs = v - dot(v, normalize(uCam - P)) * normalize(uCam - P);",   // screen-plane velocity
+    "  float vl = length(vs);",
+    "  vec3 along = vl > 1e-3 ? vs / vl : uCamUp, across = normalize(cross(along, normalize(uCam - P)));",
+    "  float stretch = 1.0 + min(vl * 0.08, 2.5);",
+    "  P += across * q.x * aInst0.w + along * q.y * aInst0.w * stretch;",
+    "  vQ = q; vA = aInst1.w;",
+    "  gl_Position = uViewProj * vec4(P, 1.0);",
+    "}",
+  ].join("\n");
+  var FS_SPRAY = HEAD + C_COMMON + "\n" + C_ENV + "\n" + [
+    "in vec2 vQ;",
+    "in float vA;",
+    "out vec4 o;",
+    "void main() {",
+    "  float d = length(vQ);",
+    "  float a = smoothstep(1.0, 0.25, d) * vA * 0.7;",
+    "  if (a < 0.004) discard;",
+    "  vec3 sky = PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb;",
+    "  vec3 col = (uSunCol * 0.95 + sky) / PI * 0.9;",
+    "  o = vec4(col * a, a);",
     "}",
   ].join("\n");
 
@@ -1395,11 +1515,12 @@
       var u = this.u[name], v = vals[name];
       if (!u) continue;
       switch (u.type) {
-        case gl.FLOAT: gl.uniform1f(u.loc, v); break;
+        case gl.FLOAT: if (typeof v === "number") gl.uniform1f(u.loc, v); else gl.uniform1fv(u.loc, v); break;
         case gl.FLOAT_VEC2: gl.uniform2fv(u.loc, v); break;
         case gl.FLOAT_VEC3: gl.uniform3fv(u.loc, v); break;
         case gl.FLOAT_VEC4: gl.uniform4fv(u.loc, v); break;
         case gl.INT: case gl.BOOL: gl.uniform1i(u.loc, v); break;
+        case gl.INT_VEC2: gl.uniform2iv(u.loc, v); break;
         case gl.FLOAT_MAT4: gl.uniformMatrix4fv(u.loc, false, v); break;
         default:
           if (u.unit >= 0) { gl.activeTexture(gl.TEXTURE0 + u.unit); gl.bindTexture(gl.TEXTURE_2D, v); }
@@ -1510,6 +1631,8 @@
     this.progPlantShadow = mk(VS_PLANT, FS_PLANT_SHADOW, "plant shadows");
     this.progThing = mk(VS_THING, FS_THING, "reef life");
     this.progThingShadow = mk(VS_THING, FS_THING_SHADOW, "reef life shadows");
+    this.progRipple = mk(VS_FULL, FS_RIPPLE, "ripples");
+    this.progSpray = mk(VS_SPRAY, FS_SPRAY, "spray");
     this.progDown = mk(VS_FULL, FS_DOWN, "bloom down");
     this.progUp = mk(VS_FULL, FS_UP, "bloom up");
     this.progComposite = mk(VS_FULL, FS_COMPOSITE, "composite");
@@ -1528,7 +1651,34 @@
         xi: gaussians(N * N, 1013 + 7919 * c),
       };
     });
-    this.probe = this._tex(1, 1, gl.RGBA16F, gl.NEAREST, gl.CLAMP_TO_EDGE);
+    // 64 water-height probes (texel 0 = camera), read back a frame late
+    // through a pixel-pack buffer so the CPU never waits on the GPU
+    this.probe = this._tex(64, 1, this.fftFormat, gl.NEAREST, gl.CLAMP_TO_EDGE);
+    this.probePBO = gl.createBuffer();
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.probePBO);
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, 64 * 16, gl.STREAM_READ);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    this.probeFence = null; this.probeWait = 0;
+    this.probeRead = new Float32Array(64 * 4);
+    this.probeHeights = null;
+    this.probePts = new Float32Array(128);
+    // interactive ripples
+    var floatLinear = !!gl.getExtension("OES_texture_float_linear");
+    var ripFmt = cbf && floatLinear ? gl.RGBA32F : gl.RGBA16F;
+    this.RIP_N = 512; this.RIP_CELL = 0.2;
+    this.rip = [0, 1].map(function () { return self._tex(self.RIP_N, self.RIP_N, ripFmt, gl.LINEAR, gl.CLAMP_TO_EDGE); });
+    this.ripFbo = this.rip.map(function (t) { return self._mrt([t]); });
+    this.ripCur = 0; this.ripC = null; this.drops = [];
+    this.rip.forEach(function (t, i) { self._target(self.ripFbo[i], self.RIP_N, self.RIP_N); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // spray particles
+    this.spray = { vao: gl.createVertexArray(), buf: gl.createBuffer(), n: 0, data: null };
+    gl.bindVertexArray(this.spray.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.spray.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, 4000 * 32, gl.DYNAMIC_DRAW);
+    [5, 6].forEach(function (loc, i) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 32, i * 16); gl.vertexAttribDivisor(loc, 1); });
+    gl.bindVertexArray(null);
+    this.dynamic = {};
     this.probeFbo = this._mrt([this.probe]);
     this.atmo = this._tex(256, 128, gl.RGBA16F, gl.LINEAR, gl.REPEAT);
     gl.bindTexture(gl.TEXTURE_2D, this.atmo);
@@ -1716,6 +1866,64 @@
       gl.bindBuffer(gl.ARRAY_BUFFER, k.far.buf);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, outF, 0, nf * 9);
     }
+  };
+
+  // ---------------------------------------------------------- interaction
+  // Ripple drops for the next frame: [x, z, radius, velocity kick, foam].
+  Renderer.prototype.addDrops = function (list) { for (var i = 0; i < list.length && this.drops.length < 24; i++) this.drops.push(list[i]); };
+  // Up to 63 world (x, z) points whose water height to measure (slot 0 is
+  // the camera); results come back from probeResults() a frame later.
+  Renderer.prototype.setProbePoints = function (pts) {
+    this.probeWorld = pts;
+  };
+  Renderer.prototype.probeResults = function () { return this.probeHeights; };
+  Renderer.prototype.addDynamicKind = function (name, mesh, code, max) { this.dynamic[name] = this._thingKind(mesh, code, max); return this.dynamic[name]; };
+  // fill(inst, O) writes 12-float instances relative to O and returns the count
+  Renderer.prototype.setDynamic = function (name, fill) { this.dynamic[name].fill = fill; };
+  Renderer.prototype.setSpray = function (fill) { this.spray.fill = fill; };
+  Renderer.prototype._readProbes = function () {
+    var gl = this.gl;
+    if (!this.probeFence) return;
+    // A fence only signals once the browser has returned to its event loop;
+    // after a few frames without one (a busy page, or no event loop at all)
+    // read anyway and accept the stall.
+    var st = gl.clientWaitSync(this.probeFence, 0, 0);
+    if (st === gl.TIMEOUT_EXPIRED && ++this.probeWait < 4) return;
+    this.probeWait = 0;
+    gl.deleteSync(this.probeFence); this.probeFence = null;
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.probePBO);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.probeRead);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    var h = this.probeHeights || (this.probeHeights = new Float32Array(64));
+    for (var i = 0; i < 64; i++) h[i] = this.probeRead[i * 4];
+  };
+  // One or two wave-equation steps; the grid recentres on `centre` (world).
+  Renderer.prototype._stepRipples = function (dt, centre, O, common) {
+    var gl = this.gl, N = this.RIP_N, cell = this.RIP_CELL;
+    var c = [Math.round(centre[0] / cell), Math.round(centre[2] / cell)];
+    var shift = [0, 0];
+    if (this.ripC) shift = [c[0] - this.ripC[0], c[1] - this.ripC[1]];
+    if (Math.abs(shift[0]) > N / 2 || Math.abs(shift[1]) > N / 2) shift = [N, N];   // jumped: start clean
+    this.ripC = c;
+    var ripC = [c[0] * cell - O[0], c[1] * cell - O[1]];
+    var drops = new Float32Array(96), foams = new Float32Array(24), nd = Math.min(this.drops.length, 24);
+    for (var i = 0; i < nd; i++) {
+      var d = this.drops[i];
+      drops[i * 4] = d[0] - O[0]; drops[i * 4 + 1] = d[1] - O[1]; drops[i * 4 + 2] = d[2]; drops[i * 4 + 3] = d[3]; foams[i] = d[4] || 0;
+    }
+    this.drops = [];
+    var steps = 2, h = Math.min(dt, 0.05) / steps;
+    for (var s = 0; s < steps; s++) {
+      var src = this.ripCur, dst = 1 - src;
+      this._target(this.ripFbo[dst], N, N);
+      this.progRipple.use().set(common).set({
+        uRipPrev: this.rip[src], uShift: s === 0 ? shift : [0, 0], uRipC: ripC, uCell: cell, uDt: h, uCmax: 2.2,
+        uDrops: drops, uDropFoam: foams, uNDrops: s === 0 ? nd : 0,
+      });
+      this._fullscreen();
+      this.ripCur = dst;
+    }
+    common.uRip = this.rip[this.ripCur]; common.uRipC = ripC; common.uRipSize = N * cell;
   };
 
   // An instanced mesh with a 12-float instance layout (see VS_THING).
@@ -2057,10 +2265,23 @@
       this._fullscreen();
     }
 
-    // Water height under the camera.
-    this._target(this.probeFbo, 1, 1);
-    this.progProbe.use().set(common);
+    // Ripples, then water height at the camera and the probe points.
+    this._readProbes();
+    this._stepRipples(dt * p.timeScale, camera.rippleCentre || camera.pos, O, common);
+    var pp = this.probePts;
+    for (var pi = 0; pi < 64; pi++) {
+      var pw = this.probeWorld && this.probeWorld[pi];
+      pp[pi * 2] = pw ? pw[0] - O[0] : 0; pp[pi * 2 + 1] = pw ? pw[1] - O[1] : 0;
+    }
+    this._target(this.probeFbo, 64, 1);
+    this.progProbe.use().set(common).set({ uProbePts: pp });
     this._fullscreen();
+    if (!this.probeFence) {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.probePBO);
+      gl.readPixels(0, 0, 64, 1, gl.RGBA, gl.FLOAT, 0);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      this.probeFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
 
     // Caustics for the current waves.
     this._target(this.causticFbo, 1024, 1024);
@@ -2130,8 +2351,15 @@
       fauna[2].n = this.life.writeRays(fauna[2].inst, O);
       fauna.forEach(function (k) { gl.bindBuffer(gl.ARRAY_BUFFER, k.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12); });
     } else fauna.forEach(function (k) { k.n = 0; });
+    var dyn = [], dynamic = this.dynamic;
+    Object.keys(dynamic).forEach(function (name) {
+      var k = dynamic[name];
+      k.n = k.fill ? Math.min(k.fill(k.inst, O), k.max) : 0;
+      if (k.n) { gl.bindBuffer(gl.ARRAY_BUFFER, k.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12); dyn.push(k); }
+    });
     this.progThingShadow.use().set(common).set({ uViewProj: lightVP, uGrowR: reefR });
     this._drawThings(this.progThingShadow, this.reef);
+    this._drawThings(this.progThingShadow, dyn, { uGrowR: 0 });
     this._drawThings(this.progThingShadow, fauna, { uGrowR: 0 });
     gl.disable(gl.DEPTH_TEST);
     // world -> shadow texture coordinates (bias matrix folded in)
@@ -2158,6 +2386,7 @@
     this.progThing.use().set(common).set({ uViewProj: vp, uGrowR: reefR });
     this._drawThings(this.progThing, this.reef);
     this._drawThings(this.progThing, fauna, { uGrowR: 0 });
+    this._drawThings(this.progThing, dyn, { uGrowR: 0 });
     // copy the opaque scene so the water can look through itself at objects
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.sceneFbo);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.copyFbo);
@@ -2166,6 +2395,25 @@
     this.progWater.use().set(common).set({ uViewProj: vp, uFoamStr: p.foam > 0 ? 0.6 + p.foam : 0, uSceneCopy: this.sceneCopy, uInvRes: [1 / w, 1 / h] });
     gl.bindVertexArray(this.waterMesh.vao);
     gl.drawElements(gl.TRIANGLES, this.waterMesh.count, gl.UNSIGNED_INT, 0);
+    // spray over everything, depth-tested but not written
+    var spray = this.spray;
+    spray.n = 0;
+    if (spray.fill) {
+      spray.data = spray.data || new Float32Array(4000 * 8);
+      spray.n = Math.min(spray.fill(spray.data, O), 4000);
+    }
+    if (spray.n) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, spray.buf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, spray.data, 0, spray.n * 8);
+      var fw = norm3(camera.fwd), rt = norm3(cross3(fw, [0, 1, 0])), upc = cross3(rt, fw);
+      gl.depthMask(false);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      this.progSpray.use().set(common).set({ uViewProj: vp, uCamRight: rt, uCamUp: upc });
+      gl.bindVertexArray(spray.vao);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, spray.n);
+      gl.disable(gl.BLEND);
+      gl.depthMask(true);
+    }
     gl.disable(gl.DEPTH_TEST);
 
     // Bloom: bright-pass + downsample chain, then additive upsample.

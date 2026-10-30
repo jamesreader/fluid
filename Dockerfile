@@ -1,6 +1,6 @@
 FROM nginx:1-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY index.html sim.js ocean.html ocean.js world.js life.js sw.js manifest.webmanifest /usr/share/nginx/html/
+COPY index.html sim.js ocean.html ocean.js world.js life.js play.js sw.js manifest.webmanifest /usr/share/nginx/html/
 COPY icons /usr/share/nginx/html/icons
 # Stamp @@VER@@ in index.html and ocean.html with this build's identity.
 # Coolify may pass GIT_COMMIT/BUILD_DATE as empty build args, so the fallback
