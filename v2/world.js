@@ -187,7 +187,7 @@
       }
     });
     // The reef break: a coral ledge running out from the end of the barrier
-    // reef at ~45 degrees to the incoming crests, shallow on top, with deep
+    // reef at ~60 degrees to the incoming crests, shallow on top, with deep
     // water right up to its up-wave face. A wave catches the outer tip first
     // and the break peels down the ledge toward the beach.
     var reef = reefBreakFrame();
@@ -232,8 +232,9 @@
     var a0 = WINDWARD + 0.5;                              // near the end of the open sector
     var p0 = [Math.cos(a0) * 395, Math.sin(a0) * 395];
     var sw = 35 * Math.PI / 180, crest = [-Math.sin(sw), Math.cos(sw)];   // crest lines of the swell
-    // the ledge runs 45 degrees off the crests, seaward
-    var ang = Math.atan2(crest[1], crest[0]) + 45 * Math.PI / 180;
+    // the ledge runs 62 degrees off the crests, seaward (refraction swings the
+    // crests toward it, so the break peels at a makeable ~9 m/s, not a closeout)
+    var ang = Math.atan2(crest[1], crest[0]) + 62 * Math.PI / 180;
     var dir = [Math.cos(ang), Math.sin(ang)];
     if (dir[0] * Math.cos(a0) + dir[1] * Math.sin(a0) < 0) { ang -= Math.PI / 2; dir = [Math.cos(ang), Math.sin(ang)]; }
     var side = [-dir[1], dir[0]];

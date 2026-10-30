@@ -52,6 +52,8 @@
     foam: 0.6,
     surf: 1.6,         // height (m) of the swell that breaks on the reef and beaches
     swell: 0,          // optional extra long swell in the open-ocean FFT (m)
+    surfSim: true,     // simulate the surf zone around the camera (shallow water + lips)
+    lips: 0.25,        // how readily breaking fronts throw lips (0 = none)
     depth: 4.5,        // water depth the FFT spectrum is built for
     clarity: 1,        // >1 clearer, <1 murkier
     caustics: 1,
@@ -538,6 +540,153 @@
     "}",
   ].join("\n");
 
+  // The surf-zone shallow-water simulation (see swe.js for the scheme): a
+  // 205 m grid of 0.4 m cells that follows the camera. State texture: water
+  // depth h, x-face velocity u, z-face velocity w, foam. Aux: lip launch
+  // strength, flow direction, sand wetness.
+  var C_SWE = [
+    "uniform sampler2D uSwe;",
+    "uniform vec2 uSweC;",          // O-relative centre of the grid
+    "uniform float uSweSize, uSweOn;",
+    "vec2 sweUV(vec2 p) { return (p - uSweC) / uSweSize + 0.5; }",
+    "float sweMask(vec2 p) {",
+    "  if (uSweOn < 0.5) return 0.0;",
+    "  vec2 uv = sweUV(p), e = min(uv, 1.0 - uv);",
+    "  return smoothstep(0.03, 0.09, min(e.x, e.y));",
+    "}",
+    // manual bilinear (float textures need not be filterable); t in texels, texel i at i
+    "vec4 texBilin(sampler2D tex, vec2 t) {",
+    "  ivec2 m = textureSize(tex, 0) - 1, i = ivec2(floor(t));",
+    "  vec2 f = t - floor(t);",
+    "  vec4 a = texelFetch(tex, clamp(i, ivec2(0), m), 0), b = texelFetch(tex, clamp(i + ivec2(1, 0), ivec2(0), m), 0);",
+    "  vec4 c = texelFetch(tex, clamp(i + ivec2(0, 1), ivec2(0), m), 0), d = texelFetch(tex, clamp(i + ivec2(1, 1), ivec2(0), m), 0);",
+    "  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);",
+    "}",
+    "vec4 sweAt(vec2 p) { return texBilin(uSwe, sweUV(p) * vec2(textureSize(uSwe, 0)) - 0.5); }",
+    // the rendered surface: depth over the bed; a vanishing film tucks under the sand
+    "float sweEta(float h, float bed) { return bed + h - 0.04 * (1.0 - smoothstep(0.0, 0.06, h)); }",
+  ].join("\n");
+
+  // Target state for the simulation: the analytic swell (height, and the
+  // long-wave orbital velocity c eta / d along its direction of travel).
+  var C_SWE_TARGET = [
+    "vec4 sweTarget(vec2 pos, float bed) {",
+    "  Surf s = shoreWave(pos, 0.0);",
+    "  float eta = s.d.y, d = max(-bed, 0.0), h = max(eta - bed, 0.0);",
+    "  float dd = max(d, 0.3), c = sqrt(9.81 * dd);",
+    "  vec2 v = d > 0.3 ? s.n * c * eta / dd : vec2(0.0);",
+    "  return vec4(h, v, 0.0);",
+    "}",
+  ].join("\n");
+
+  // Pass 1: shift the grid with the camera (new cells start from the target),
+  // then advect the face velocities and the foam semi-Lagrangian.
+  var FS_SWE_ADV = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SWE_TARGET + "\n" + [
+    "uniform sampler2D uSweIn;",
+    "uniform ivec2 uShift;",
+    "uniform vec2 uSweC;",
+    "uniform float uCell, uDt;",
+    "out vec4 o;",
+    "vec4 F(ivec2 q) { ivec2 m = textureSize(uSweIn, 0) - 1; return texelFetch(uSweIn, clamp(q, ivec2(0), m), 0); }",
+    "vec4 samp(vec2 t) {",
+    "  ivec2 i = ivec2(floor(t)); vec2 f = t - floor(t);",
+    "  return mix(mix(F(i), F(i + ivec2(1, 0)), f.x), mix(F(i + ivec2(0, 1)), F(i + ivec2(1, 1)), f.x), f.y);",
+    "}",
+    // velocity at a point in cell-corner space (cell i spans [i, i+1])
+    "vec2 vel(vec2 X) { return vec2(samp(X - vec2(1.0, 0.5)).g, samp(X - vec2(0.5, 1.0)).b); }",
+    "void main() {",
+    "  ivec2 p = ivec2(gl_FragCoord.xy), n = textureSize(uSweIn, 0), q = p + uShift;",
+    "  if (q.x < 0 || q.y < 0 || q.x >= n.x || q.y >= n.y) {",
+    "    vec2 pos = uSweC + (vec2(p) + 0.5 - 0.5 * vec2(n)) * uCell;",
+    "    o = sweTarget(pos, worldAt(pos, 0.0).x);",
+    "    return;",
+    "  }",
+    "  float k = uDt / uCell;",
+    "  vec2 Xu = vec2(q) + vec2(1.0, 0.5), Xw = vec2(q) + vec2(0.5, 1.0), Xc = vec2(q) + 0.5;",
+    "  float u = samp(Xu - vel(Xu) * k - vec2(1.0, 0.5)).g;",
+    "  float w = samp(Xw - vel(Xw) * k - vec2(0.5, 1.0)).b;",
+    "  float foam = samp(Xc - vel(Xc) * k - 0.5).a;",
+    "  o = vec4(F(q).r, u, w, foam);",
+    "}",
+  ].join("\n");
+
+  // Pass 2: depth from upwind fluxes (conserves water, never negative).
+  var FS_SWE_H = HEAD + [
+    "uniform sampler2D uSweIn;",
+    "uniform float uCell, uDt;",
+    "out vec4 o;",
+    "vec4 F(ivec2 q) { ivec2 m = textureSize(uSweIn, 0) - 1; return texelFetch(uSweIn, clamp(q, ivec2(0), m), 0); }",
+    "void main() {",
+    "  ivec2 p = ivec2(gl_FragCoord.xy);",
+    "  vec4 c = F(p), l = F(p - ivec2(1, 0)), d = F(p - ivec2(0, 1)), r = F(p + ivec2(1, 0)), t = F(p + ivec2(0, 1));",
+    "  float fxR = c.g * (c.g > 0.0 ? c.r : r.r), fxL = l.g * (l.g > 0.0 ? l.r : c.r);",
+    "  float fzT = c.b * (c.b > 0.0 ? c.r : t.r), fzB = d.b * (d.b > 0.0 ? d.r : c.r);",
+    "  o = vec4(max(0.0, c.r - uDt / uCell * (fxR - fxL + fzT - fzB)), c.gba);",
+    "}",
+  ].join("\n");
+
+  // Pass 3: pressure gradient on wet faces, friction, speed limit; relax
+  // toward the analytic swell in deep water and at the grid border; foam on
+  // steep fronts; lip launch strength, flow direction and sand wetness.
+  var FS_SWE_VEL = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SWE_TARGET + "\n" + [
+    "uniform sampler2D uSweIn, uAuxIn;",
+    "uniform ivec2 uAuxShift;",
+    "uniform vec2 uSweC;",
+    "uniform float uCell, uDt;",
+    "layout(location = 0) out vec4 oS;",
+    "layout(location = 1) out vec4 oA;",
+    "const float DRY = 0.02, FRICTION = 0.003;",
+    "vec4 F(ivec2 q) { ivec2 m = textureSize(uSweIn, 0) - 1; return texelFetch(uSweIn, clamp(q, ivec2(0), m), 0); }",
+    "void main() {",
+    "  ivec2 p = ivec2(gl_FragCoord.xy), n = textureSize(uSweIn, 0);",
+    "  vec4 c = F(p), r = F(p + ivec2(1, 0)), t = F(p + ivec2(0, 1)), l = F(p - ivec2(1, 0)), d = F(p - ivec2(0, 1));",
+    "  vec2 pos = uSweC + (vec2(p) + 0.5 - 0.5 * vec2(n)) * uCell;",
+    "  float b0 = worldAt(pos, 0.0).x, bR = worldAt(pos + vec2(uCell, 0.0), 0.0).x, bT = worldAt(pos + vec2(0.0, uCell), 0.0).x;",
+    "  float bL = worldAt(pos - vec2(uCell, 0.0), 0.0).x, bB = worldAt(pos - vec2(0.0, uCell), 0.0).x;",
+    "  float e0 = b0 + c.r, eR = bR + r.r, eT = bT + t.r, eL = bL + l.r, eB = bB + d.r;",
+    "  float vmax = 0.5 * uCell / uDt;",
+    "  float hf = max(e0, eR) - max(b0, bR);",
+    "  float u = hf > DRY ? c.g - 9.81 * uDt / uCell * (eR - e0) : 0.0;",
+    "  u = clamp(u / (1.0 + uDt * FRICTION * abs(u) / max(hf, 0.05)), -vmax, vmax);",
+    "  float hz = max(e0, eT) - max(b0, bT);",
+    "  float w = hz > DRY ? c.b - 9.81 * uDt / uCell * (eT - e0) : 0.0;",
+    "  w = clamp(w / (1.0 + uDt * FRICTION * abs(w) / max(hz, 0.05)), -vmax, vmax);",
+    "  float h = c.r;",
+    // the analytic swell drives deep water and the border band
+    "  vec2 e = min(vec2(p), vec2(n) - 1.0 - vec2(p)) / float(n.x);",
+    "  float border = 1.0 - smoothstep(0.0, 0.06, min(e.x, e.y));",
+    "  float rr = 3.0 * smoothstep(2.4, 3.6, -b0) + 10.0 * border;",
+    "  if (rr > 0.0) {",
+    "    vec4 T = sweTarget(pos, b0);",
+    "    float a = 1.0 - exp(-rr * uDt);",
+    "    h += (T.r - h) * a; u += (T.g - u) * a; w += (T.b - w) * a;",
+    "  }",
+    // flow at the cell centre, the surface slope along it
+    "  vec2 vc = 0.5 * vec2(u + l.g, w + d.b);",
+    "  float sp = length(vc);",
+    "  vec2 vn = sp > 1e-3 ? vc / sp : vec2(0.0);",
+    "  vec2 ge = vec2(eR - eL, eT - eB) / (2.0 * uCell);",
+    "  float steep = h > DRY ? -dot(ge, vn) : 0.0;",
+    // foam: steep fronts churn white water, which drifts and fades
+    "  float foam = c.a * exp(-uDt / 3.5) + uDt * 2.5 * smoothstep(0.7, 1.8, steep) * smoothstep(0.08, 0.3, h);",
+    "  foam = min(foam, 3.0);",
+    // aux: sand wetness (stays dark a few seconds after the swash recedes)
+    "  vec4 ap = texelFetch(uAuxIn, clamp(p + uAuxShift, ivec2(0), n - 1), 0);",
+    "  float wet = ap.a * exp(-uDt / 6.0);",
+    "  if (h > DRY && b0 > -0.2) wet = 1.0;",
+    // lip launch: a steep front standing well above still water, moving
+    // shoreward, in the plunging band of the analytic surf, stronger where
+    // the bed rises steeply under it (plunging rather than spilling)
+    "  vec4 sh = textureLod(uShore, worldUV(pos), 0.0);",
+    "  vec2 sn = normalize(textureLod(uShoreK, worldUV(pos), 0.0).xy + 1e-6);",
+    "  float bedRise = dot(vec2(bR - bL, bT - bB) / (2.0 * uCell), vn);",
+    "  float band = smoothstep(0.75, 0.92, sh.w) * (1.0 - smoothstep(1.3, 1.55, sh.w));",
+    "  float lip = smoothstep(0.7, 1.5, steep) * smoothstep(0.3, 0.75, e0) * band * step(0.0, dot(vn, sn)) * (0.35 + 0.65 * smoothstep(0.03, 0.25, bedRise));",
+    "  oS = vec4(h, u, w, foam);",
+    "  oA = vec4(lip, vn, wet);",
+    "}",
+  ].join("\n");
+
   // Interactive ripples: a wave-equation height field on a 102 m grid that
   // follows the camera, added on top of the ocean (r height, g velocity,
   // b foam). Zero outside the grid.
@@ -817,7 +966,7 @@
 
   // Water height under the camera, written to a 1x1 texture each frame so
   // every later pass knows whether the eye is above or below the surface.
-  var FS_PROBE = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + [
+  var FS_PROBE = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + C_SWE + "\n" + [
     "uniform vec2 uProbePts[64];",   // O-relative; texel 0 is always the camera
     "out vec4 o;",
     // invert the horizontal displacement, then read the height there
@@ -825,14 +974,19 @@
     "  vec2 p = xz;",
     "  for (int i = 0; i < 4; i++) {",
     "    vec3 f = depthFade(-worldAt(p, 0.0).x);",
-    "    p = xz - oceanDispF(p, vec3(0.0), f).xz - shoreWave(p, 0.0).d.xz;",
+    "    p = xz - oceanDispF(p, vec3(0.0), f).xz - shoreWave(p, 0.0).d.xz * (1.0 - sweMask(p));",
     "  }",
-    "  return oceanDispF(p, vec3(0.0), depthFade(-worldAt(p, 0.0).x)).y + shoreWave(p, 0.0).d.y + ripple(p).r;",
+    "  float sm = sweMask(p), bed = worldAt(p, 0.0).x;",
+    "  float shore = mix(shoreWave(p, 0.0).d.y, bed + sweAt(p).r, sm);",
+    "  return oceanDispF(p, vec3(0.0), depthFade(-bed)).y + shore + ripple(p).r;",
     "}",
     "void main() {",
     "  int i = int(gl_FragCoord.x);",
     "  vec2 xz = i == 0 ? uCam.xz : uProbePts[i];",
-    "  o = vec4(surfaceAt(xz), 0.0, 0.0, 1.0);",
+    // height, and the surf's current (cell-centre velocity) where simulated
+    "  vec4 st = sweAt(xz), stL = sweAt(xz - vec2(0.4, 0.0)), stB = sweAt(xz - vec2(0.0, 0.4));",
+    "  vec2 cur = 0.5 * vec2(st.g + stL.g, st.b + stB.b) * sweMask(xz);",
+    "  o = vec4(surfaceAt(xz), cur, 1.0);",
     "}",
   ].join("\n");
 
@@ -922,7 +1076,7 @@
   // Surface mesh: a camera-centred grid whose cells grow exponentially with
   // distance. Each vertex reads displacement at the mip level matching its
   // cell size, so waves too short for the mesh fade out instead of aliasing.
-  var VS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + [
+  var VS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + C_SWE + "\n" + [
     "in vec2 aPos;",
     "in float aCell;",
     "uniform mat4 uViewProj;",
@@ -934,7 +1088,11 @@
     "  float wl = clamp(log2(aCell / 2.0), 0.0, 8.0);",
     "  float depth = -worldAt(aPos, wl).x;",
     "  vec4 d = oceanDispF(aPos, lod, depthFade(depth));",
-    "  d.xyz += shoreWave(aPos, wl).d;",
+    "  vec3 sd = shoreWave(aPos, wl).d;",
+    // inside the surf simulation its water replaces the analytic swell
+    "  float sm = sweMask(aPos);",
+    "  if (sm > 0.0) sd = mix(sd, vec3(0.0, sweEta(sweAt(aPos).r, worldAt(aPos, 0.0).x), 0.0), sm);",
+    "  d.xyz += sd;",
     "  d.y += ripple(aPos).r * (1.0 - smoothstep(0.3, 0.8, aCell));",
     "  vec3 P = vec3(aPos.x + d.x, d.y, aPos.y + d.z);",
     "  vXZ = aPos;",
@@ -943,8 +1101,7 @@
     "}",
   ].join("\n");
 
-  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
-    "uniform sampler2D uProbe;",
+  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_RIPPLE + "\n" + C_SWE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
     "uniform float uFoamStr;",
     "uniform sampler2D uSceneCopy;",   // opaque scene; alpha = distance of objects (0 = terrain/sky)
     "uniform vec2 uInvRes;",
@@ -962,6 +1119,22 @@
     "  vec3 fd = depthFade(-wd.x);",
     "  vec4 g = texture(uDer0, uv0) * fd.x + texture(uDer1, uv1) * fd.y + texture(uDer2, uv2) * fd.z;",
     "  Surf sw = shoreWave(vXZ, 0.0);",
+    // inside the surf simulation: its slopes, foam and (for the milky surf
+    // zone) its fronts stand in for the analytic swell's
+    "  float sm = sweMask(vXZ), sweFoam = 0.0;",
+    "  if (sm > 0.0) {",
+    "    float ec = 0.4, b0 = wd.x;",
+    "    float eX = sweEta(sweAt(vXZ + vec2(ec, 0.0)).r, worldAt(vXZ + vec2(ec, 0.0), 0.0).x) - sweEta(sweAt(vXZ - vec2(ec, 0.0)).r, worldAt(vXZ - vec2(ec, 0.0), 0.0).x);",
+    "    float eZ = sweEta(sweAt(vXZ + vec2(0.0, ec)).r, worldAt(vXZ + vec2(0.0, ec), 0.0).x) - sweEta(sweAt(vXZ - vec2(0.0, ec)).r, worldAt(vXZ - vec2(0.0, ec), 0.0).x);",
+    "    vec4 st = sweAt(vXZ);",
+    "    sweFoam = st.a;",
+    "    sw.slope = mix(sw.slope, vec2(eX, eZ) / (2.0 * ec), sm);",
+    "    sw.jac *= 1.0 - sm;",
+    "    sw.foam = mix(sw.foam, sat(sweFoam * 0.8), sm);",
+    "    float swH = max(st.r + b0, 0.0) * 1.5;",                       // crest height drives the milky glow
+    "    sw.H = mix(sw.H, swH, sm);",
+    "    sw.s = mix(sw.s, 0.5 + sat(sweFoam), sm);",
+    "  }",
     // surface normal from both tangent vectors (handles the folded lip too)
     "  vec2 rs = rippleSlope(vXZ);",
     "  float ripFoam = ripple(vXZ).b;",
@@ -977,7 +1150,8 @@
     // Filtered normals lose slope variance with distance; give it back as roughness.
     "  float rough = clamp(0.045 + 0.05 * log2(1.0 + dist / 25.0), 0.045, 0.32);",
     "  float envLodR = clamp(log2(1.0 + dist / 60.0) * 1.3, 0.0, 5.0);",
-    "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
+    // seen from below, the surface shows its back face
+    "  bool under = !gl_FrontFacing;",
     "  vec3 col;",
     "  if (!under) {",
     "    if (dot(N, V) < 0.02) N = normalize(N + V * (0.02 - dot(N, V)));",
@@ -1064,8 +1238,8 @@
     "  gl_Position = uViewProj * vec4(vPos, 1.0);",
     "}",
   ].join("\n");
-  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_CORALROCK + "\n" + [
-    "uniform sampler2D uProbe;",
+  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_CORALROCK + "\n" + C_SWE + "\n" + [
+    "uniform sampler2D uProbe, uSweAux;",
     "in vec3 vPos;",
     "out vec4 o;",
     "void main() {",
@@ -1094,7 +1268,12 @@
     "  alb *= 1.0 + clamp(lump * 1.2, -0.45, 0.2);",   // crevices darker, knobs lighter
     // sand the swash just ran over stays dark and glossy for a few seconds
     "  Surf sw = shoreWave(P.xz, 0.0);",
-    "  if (wd.x > 0.0 && sw.H > 0.0) {",
+    "  float smT = sweMask(P.xz);",
+    "  if (smT > 0.0 && wd.x > -0.3) {",           // the simulated swash wets the sand it reached
+    "    float wet2 = texBilin(uSweAux, sweUV(P.xz) * vec2(textureSize(uSweAux, 0)) - 0.5).a * smT;",
+    "    alb *= mix(1.0, 0.62, max(wet2 - wet, 0.0));",
+    "    wet = max(wet, wet2);",
+    "  } else if (wd.x > 0.0 && sw.H > 0.0) {",
     "    float zone = (1.0 - smoothstep(-0.04, 0.12, wd.x - 0.55 * sw.H));",
     "    float fresh = sw.th > 0.0 ? exp(-sw.th * 0.6) : exp(sw.th * 2.0);",
     "    float wet2 = zone * (0.6 + 0.4 * fresh);",
@@ -1425,6 +1604,196 @@
     "}",
   ].join("\n");
 
+  // Lip particles: 256^2 slots, state in two float textures,
+  //   A = (position O-relative, life left), B = (velocity, age; age < 0: spray).
+  // Dead slots look for a breaking front (aux.r from the surf simulation) by
+  // rejection sampling and launch from its crest at the wave's speed; the
+  // lip flies ballistically over the face and, landing, shatters into spray.
+  var C_PCG = [
+    "uint pcg(uint v) { uint st = v * 747796405u + 2891336453u; uint wd = ((st >> ((st >> 28u) + 4u)) ^ st) * 277803737u; return (wd >> 22u) ^ wd; }",
+    "float rnd(inout uint s) { s = pcg(s); return float(s) * (1.0 / 4294967296.0); }",
+  ].join("\n");
+  var FS_LIP_UPDATE = HEAD + C_COMMON + "\n" + C_WORLD + "\n" + C_SWE + "\n" + C_PCG + "\n" + [
+    "uniform sampler2D uPA, uPB, uSweAux;",
+    "uniform float uDt, uFrame, uLipRate;",
+    "uniform vec2 uOShift;",            // the grid origin moved: keep particles put in the world
+    "layout(location = 0) out vec4 oA;",
+    "layout(location = 1) out vec4 oB;",
+    "float waterLevel(vec2 p) {",
+    "  if (sweMask(p) <= 0.0) return 0.0;",
+    "  float bed = worldAt(p, 0.0).x, h = sweAt(p).r;",
+    "  return h > 0.02 ? bed + h : bed;",
+    "}",
+    "void main() {",
+    "  ivec2 id = ivec2(gl_FragCoord.xy);",
+    "  vec4 A = texelFetch(uPA, id, 0), B = texelFetch(uPB, id, 0);",
+    "  uint seed = pcg(uint(id.x) + uint(id.y) * 256u + uint(uFrame) * 65536u);",
+    "  if (A.w > 0.0) {",
+    "    vec3 v = B.xyz; v.y -= 9.81 * uDt; v *= exp(-0.12 * uDt);",
+    "    vec3 P = A.xyz + vec3(uOShift.x, 0.0, uOShift.y) + v * uDt;",
+    "    float life = A.w - uDt;",
+    "    bool lip = B.w >= 0.0;",
+    "    float age = lip ? B.w + uDt : B.w - uDt;",
+    "    float wl = waterLevel(P.xz);",
+    "    if (P.y < wl - (lip ? 0.12 : 0.0) && v.y < 0.0) {",
+    "      if (lip) {",                         // the lip lands and shatters into spray
+    "        float r1 = rnd(seed), r2 = rnd(seed), r3 = rnd(seed);",
+    "        v = vec3(v.x * 0.45 + (r1 - 0.5) * 2.4, abs(v.y) * 0.35 + 0.6 + r2 * 2.4, v.z * 0.45 + (r3 - 0.5) * 2.4);",
+    "        P.y = wl + 0.05; life = 0.35 + 0.8 * rnd(seed); age = -1e-3;",
+    "      } else life = 0.0;",
+    "    }",
+    "    oA = vec4(P, life); oB = vec4(v, age);",
+    "    return;",
+    "  }",
+    "  oA = vec4(0.0); oB = vec4(0.0);",
+    "  if (uSweOn < 0.5 || uLipRate <= 0.0) return;",
+    "  ivec2 n = textureSize(uSweAux, 0);",
+    "  float cell = uSweSize / float(n.x);",
+    "  for (int i = 0; i < 6; i++) {",
+    "    vec2 cu = vec2(rnd(seed), rnd(seed));",
+    "    ivec2 c = ivec2(cu * vec2(n));",
+    "    vec4 ax = texelFetch(uSweAux, c, 0);",
+    "    if (ax.r * uLipRate <= rnd(seed)) continue;",
+    "    vec2 dir = normalize(ax.gb + 1e-5);",
+    "    vec2 p0 = uSweC + (vec2(c) + vec2(rnd(seed), rnd(seed)) - 0.5 * vec2(n)) * cell;",
+    // launch from the top of the face: walk back up the slope to the crest
+    "    vec2 best = p0; float top = -1e9, depth = 0.3;",
+    "    for (int k = 0; k < 5; k++) {",
+    "      vec2 q = p0 - dir * (float(k) * 0.35);",
+    "      float hq = sweAt(q).r, e = worldAt(q, 0.0).x + hq;",
+    "      if (e > top) { top = e; best = q; depth = hq; }",
+    "    }",
+    "    float speed = sqrt(9.81 * max(depth, 0.3)) * (0.9 + 0.3 * rnd(seed));",
+    "    oA = vec4(best.x, top + 0.02, best.y, 2.2);",
+    "    oB = vec4(dir.x * speed, 0.3 + 0.9 * rnd(seed), dir.y * speed, 0.0);",
+    "    return;",
+    "  }",
+    "}",
+  ].join("\n");
+  // Particles drawn as points straight from the state textures
+  // (uKind 0: lip, 1: spray).
+  var VS_LIP = HEAD + [
+    "uniform sampler2D uPA, uPB;",
+    "uniform mat4 uViewProj;",
+    "uniform float uPointScale, uRadius, uKind, uMaxPoint;",
+    "out float vR, vZ, vAge;",
+    "void main() {",
+    "  ivec2 n = textureSize(uPA, 0), t = ivec2(gl_VertexID % n.x, gl_VertexID / n.x);",
+    "  vec4 A = texelFetch(uPA, t, 0), B = texelFetch(uPB, t, 0);",
+    "  bool spray = B.w < 0.0;",
+    "  if (A.w <= 0.0 || (uKind < 0.5) == spray) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vR = vZ = vAge = 0.0; return; }",
+    "  vec4 c = uViewProj * vec4(A.xyz, 1.0);",
+    "  float r = uKind < 0.5 ? uRadius : 0.04 + 0.07 * fract(float(gl_VertexID) * 0.618034);",
+    "  gl_Position = c;",
+    "  gl_PointSize = clamp(2.0 * r * uPointScale / max(c.w, 0.05), 1.0, uMaxPoint);",
+    "  vR = r; vZ = c.w; vAge = uKind < 0.5 ? B.w : sat01(A.w * 2.0);",
+    "}",
+  ].join("\n").replace("sat01(A.w * 2.0)", "clamp(A.w * 2.0, 0.0, 1.0)");
+  // eye distance of the sphere's front surface (depth-tested by its centre)
+  var FS_LIP_DEPTH = HEAD + [
+    "in float vR, vZ, vAge;",
+    "out vec4 o;",
+    "void main() {",
+    "  vec2 q = gl_PointCoord * 2.0 - 1.0;",
+    "  float d2 = dot(q, q);",
+    "  if (d2 > 1.0) discard;",
+    "  o = vec4(vZ - vR * sqrt(1.0 - d2), 0.0, 0.0, 1.0);",
+    "}",
+  ].join("\n");
+  // additive: water thickness along the view ray, and how aerated it is
+  var FS_LIP_THICK = HEAD + [
+    "in float vR, vZ, vAge;",
+    "out vec4 o;",
+    "void main() {",
+    "  vec2 q = gl_PointCoord * 2.0 - 1.0;",
+    "  float d2 = dot(q, q);",
+    "  if (d2 > 1.0) discard;",
+    "  float th = vR * sqrt(1.0 - d2);",
+    "  o = vec4(th, th * smoothstep(0.35, 1.1, vAge), 0.0, 0.0);",
+    "}",
+  ].join("\n");
+  // depth-aware blur that keeps silhouettes sharp
+  var FS_LIP_BLUR = HEAD + [
+    "uniform sampler2D uSrc;",
+    "uniform vec2 uStep;",
+    "in vec2 vUv;",
+    "out vec4 o;",
+    "void main() {",
+    "  float z0 = texture(uSrc, vUv).r;",
+    "  if (z0 > 9000.0) { o = vec4(z0); return; }",
+    "  float sum = 0.0, wsum = 0.0, falloff = 1.0 / (0.12 + 0.01 * z0);",
+    "  for (int k = -7; k <= 7; k++) {",
+    "    float z = texture(uSrc, vUv + uStep * float(k)).r;",
+    "    if (z > 9000.0) continue;",
+    "    float dz = (z - z0) * falloff;",
+    "    float wgt = exp(-float(k * k) / 18.0 - dz * dz);",
+    "    sum += z * wgt; wsum += wgt;",
+    "  }",
+    "  o = vec4(sum / wsum, 0.0, 0.0, 1.0);",
+    "}",
+  ].join("\n");
+  // The lip as a surface: normals from the smoothed depth, reflection,
+  // refraction of what's behind, the body colour of the water it's made of,
+  // the sun shining through thin water, and foam as it aerates.
+  var FS_LIP_COMPOSITE = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
+    "uniform sampler2D uLipZ, uLipT, uSceneCopy, uSceneDepth;",
+    "uniform vec2 uTanHalf;",
+    "uniform vec3 uCamRight, uCamUp, uCamFwd;",
+    "uniform float uNear, uFar;",
+    "in vec2 vUv;",
+    "out vec4 o;",
+    "float lipZ(vec2 uv) { return texture(uLipZ, uv).r; }",
+    "vec3 viewPos(vec2 uv, float z) { return vec3((uv * 2.0 - 1.0) * uTanHalf * z, z); }",
+    "void main() {",
+    "  vec3 base = texture(uSceneCopy, vUv).rgb;",
+    "  float z = lipZ(vUv);",
+    "  if (z > 9000.0) { o = vec4(base, 1.0); return; }",
+    "  float d = texture(uSceneDepth, vUv).r;",
+    "  float sz = d >= 1.0 ? 1e9 : 2.0 * uNear * uFar / (uFar + uNear - (d * 2.0 - 1.0) * (uFar - uNear));",
+    "  if (z > sz + 0.05) { o = vec4(base, 1.0); return; }",
+    "  vec2 tx = 1.0 / vec2(textureSize(uLipZ, 0));",
+    "  vec3 P = viewPos(vUv, z);",
+    "  float zr = lipZ(vUv + vec2(tx.x, 0.0)), zl = lipZ(vUv - vec2(tx.x, 0.0)), zu = lipZ(vUv + vec2(0.0, tx.y)), zd = lipZ(vUv - vec2(0.0, tx.y));",
+    "  vec3 ddx = (abs(zr - z) < abs(z - zl) && zr < 9000.0) || zl > 9000.0 ? viewPos(vUv + vec2(tx.x, 0.0), zr < 9000.0 ? zr : z) - P : P - viewPos(vUv - vec2(tx.x, 0.0), zl);",
+    "  vec3 ddy = (abs(zu - z) < abs(z - zd) && zu < 9000.0) || zd > 9000.0 ? viewPos(vUv + vec2(0.0, tx.y), zu < 9000.0 ? zu : z) - P : P - viewPos(vUv - vec2(0.0, tx.y), zd);",
+    "  vec3 nv = normalize(cross(ddx, ddy));",
+    "  if (nv.z > 0.0) nv = -nv;",                            // face the camera
+    "  vec3 N = normalize(uCamRight * nv.x + uCamUp * nv.y + uCamFwd * nv.z);",
+    "  vec3 V = -normalize(uCamRight * P.x + uCamUp * P.y + uCamFwd * P.z);",
+    "  vec4 th = texture(uLipT, vUv);",
+    "  float thick = th.r, aer = sat(th.g / max(th.r, 1e-3));",
+    "  float NoV = max(dot(N, V), 0.02);",
+    "  float F = fresnel(NoV, 1.0 / 1.333);",
+    "  vec3 refl = envLod(reflect(-V, N), 1.0);",
+    "  vec3 behind = texture(uSceneCopy, vUv + nv.xy * 0.035).rgb;",
+    "  vec3 Tr = exp(-uSigT * thick * 2.5);",
+    "  vec3 body = inscatter(1.0) * 1.6;",
+    "  vec3 col = mix(behind * Tr + body * (1.0 - Tr), refl, F);",
+    // sunlight through the thin curl: the glowing barrel
+    "  float back = pow(sat(dot(-V, uSunDir) * 0.5 + 0.5), 3.0);",
+    "  col += vec3(0.05, 0.50, 0.44) * uSunCol * 0.06 * back * exp(-thick * 1.2);",
+    "  vec3 Hh = normalize(V + uSunDir);",
+    "  col += uSunCol * 0.6 * pow(max(dot(N, Hh), 0.0), 180.0) * F;",
+    "  vec3 foam = 0.9 * (uSunCol * max(dot(N, uSunDir), 0.0) * 0.8 + skyIrradiance()) / PI;",
+    "  col = mix(col, foam, sat(aer * 1.3));",
+    "  float a = smoothstep(0.0, 0.06, thick);",
+    "  col = mix(base, col, a);",
+    "  if (any(isnan(col))) col = base;",
+    "  o = vec4(min(col, vec3(3e4)), 1.0);",
+    "}",
+  ].join("\n");
+  var FS_SPRAY_POINT = HEAD + C_COMMON + "\n" + C_ENV + "\n" + [
+    "in float vR, vZ, vAge;",
+    "out vec4 o;",
+    "void main() {",
+    "  float d = length(gl_PointCoord * 2.0 - 1.0);",
+    "  float a = (1.0 - smoothstep(0.2, 1.0, d)) * vAge * 0.75;",
+    "  if (a < 0.004) discard;",
+    "  vec3 sky = PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb;",
+    "  o = vec4((uSunCol * 0.95 + sky) / PI * 0.9 * a, a);",
+    "}",
+  ].join("\n");
+
   // ------------------------------------------------------------- post / bloom
   var FS_DOWN = HEAD + [
     "uniform sampler2D uSrc;",
@@ -1634,6 +2003,15 @@
     this.progThing = mk(VS_THING, FS_THING, "reef life");
     this.progThingShadow = mk(VS_THING, FS_THING_SHADOW, "reef life shadows");
     this.progRipple = mk(VS_FULL, FS_RIPPLE, "ripples");
+    this.progSweAdv = mk(VS_FULL, FS_SWE_ADV, "surf advect");
+    this.progSweH = mk(VS_FULL, FS_SWE_H, "surf depth");
+    this.progSweVel = mk(VS_FULL, FS_SWE_VEL, "surf velocity");
+    this.progLipUpdate = mk(VS_FULL, FS_LIP_UPDATE, "lip update");
+    this.progLipDepth = mk(VS_LIP, FS_LIP_DEPTH, "lip depth");
+    this.progLipThick = mk(VS_LIP, FS_LIP_THICK, "lip thickness");
+    this.progLipBlur = mk(VS_FULL, FS_LIP_BLUR, "lip smoothing");
+    this.progLipComp = mk(VS_FULL, FS_LIP_COMPOSITE, "lip surface");
+    this.progSprayPt = mk(VS_LIP, FS_SPRAY_POINT, "surf spray");
     this.progSpray = mk(VS_SPRAY, FS_SPRAY, "spray");
     this.progDown = mk(VS_FULL, FS_DOWN, "bloom down");
     this.progUp = mk(VS_FULL, FS_UP, "bloom up");
@@ -1673,6 +2051,25 @@
     this.ripCur = 0; this.ripC = null; this.drops = [];
     this.rip.forEach(function (t, i) { self._target(self.ripFbo[i], self.RIP_N, self.RIP_N); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); });
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // surf-zone shallow-water simulation (ping-pong state + aux)
+    this.SWE_N = 512; this.SWE_CELL = 0.4;
+    var sweFmt = cbf ? gl.RGBA32F : gl.RGBA16F;
+    this.sweS = [0, 1].map(function () { return self._tex(self.SWE_N, self.SWE_N, sweFmt, gl.NEAREST, gl.CLAMP_TO_EDGE); });
+    this.sweA = [0, 1].map(function () { return self._tex(self.SWE_N, self.SWE_N, gl.RGBA16F, gl.NEAREST, gl.CLAMP_TO_EDGE); });
+    this.sweSF = this.sweS.map(function (t) { return self._mrt([t]); });
+    this.sweVF = [[self._mrt([this.sweS[0], this.sweA[0]]), self._mrt([this.sweS[0], this.sweA[1]])], [self._mrt([this.sweS[1], this.sweA[0]]), self._mrt([this.sweS[1], this.sweA[1]])]];
+    this.sweCur = 0; this.sweAux = 0; this.sweCtr = null;
+    // lip particles: 256^2 slots
+    this.LIP_N = 256;
+    var lipFmt = cbf ? gl.RGBA32F : gl.RGBA16F;
+    this.lipA = [0, 1].map(function () { return self._tex(self.LIP_N, self.LIP_N, lipFmt, gl.NEAREST, gl.CLAMP_TO_EDGE); });
+    this.lipB = [0, 1].map(function () { return self._tex(self.LIP_N, self.LIP_N, lipFmt, gl.NEAREST, gl.CLAMP_TO_EDGE); });
+    this.lipF = [0, 1].map(function (i) { return self._mrt([self.lipA[i], self.lipB[i]]); });
+    this.lipF.forEach(function (f) { self._target(f, self.LIP_N, self.LIP_N); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.lipCur = 0; this.lipFrame = 0; this.lipO = null;
+    this.emptyVao = gl.createVertexArray();
+    this.maxPoint = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
     // spray particles
     this.spray = { vao: gl.createVertexArray(), buf: gl.createBuffer(), n: 0, data: null };
     gl.bindVertexArray(this.spray.vao);
@@ -1779,7 +2176,8 @@
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0);
       return gl.COLOR_ATTACHMENT0 + i;
     });
-    if (depth) gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    if (depth && depth instanceof WebGLTexture) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depth, 0);
+    else if (depth) gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
     gl.drawBuffers(bufs);
     var st = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     if (st !== gl.FRAMEBUFFER_COMPLETE) throw new Error("framebuffer incomplete (0x" + st.toString(16) + ")");
@@ -1878,6 +2276,8 @@
     this.probeWorld = pts;
   };
   Renderer.prototype.probeResults = function () { return this.probeHeights; };
+  // Surf currents (x, z per probe) measured with the heights; zero outside the simulation.
+  Renderer.prototype.probeCurrentResults = function () { return this.probeCurrents; };
   Renderer.prototype.addDynamicKind = function (name, mesh, code, max) { this.dynamic[name] = this._thingKind(mesh, code, max); return this.dynamic[name]; };
   // fill(inst, O) writes 12-float instances relative to O and returns the count
   Renderer.prototype.setDynamic = function (name, fill) { this.dynamic[name].fill = fill; };
@@ -1896,7 +2296,8 @@
     gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.probeRead);
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
     var h = this.probeHeights || (this.probeHeights = new Float32Array(64));
-    for (var i = 0; i < 64; i++) h[i] = this.probeRead[i * 4];
+    var cu = this.probeCurrents || (this.probeCurrents = new Float32Array(128));
+    for (var i = 0; i < 64; i++) { h[i] = this.probeRead[i * 4]; cu[i * 2] = this.probeRead[i * 4 + 1]; cu[i * 2 + 1] = this.probeRead[i * 4 + 2]; }
   };
   // One or two wave-equation steps; the grid recentres on `centre` (world).
   Renderer.prototype._stepRipples = function (dt, centre, O, common) {
@@ -1925,6 +2326,100 @@
       this.ripCur = dst;
     }
     common.uRip = this.rip[this.ripCur]; common.uRipC = ripC; common.uRipSize = N * cell;
+  };
+
+  // Surf-zone shallow water: recentre on the camera, then substeps of
+  // advect / depth / velocity (CFL-limited).
+  Renderer.prototype._stepSurf = function (dt, centre, O, common) {
+    var gl = this.gl, N = this.SWE_N, cell = this.SWE_CELL;
+    var c = [Math.round(centre[0] / cell), Math.round(centre[2] / cell)];
+    var shift = [0, 0], first = !this.sweCtr;
+    if (this.sweCtr) shift = [c[0] - this.sweCtr[0], c[1] - this.sweCtr[1]];
+    if (first || Math.abs(shift[0]) > N / 2 || Math.abs(shift[1]) > N / 2) shift = [N, N];   // start from the swell
+    this.sweCtr = c;
+    var ctr = [c[0] * cell - O[0], c[1] * cell - O[1]];
+    common.uSweC = ctr; common.uSweSize = N * cell; common.uSweOn = this.p.surfSim ? 1 : 0;
+    if (!this.p.surfSim) { common.uSwe = this.sweS[this.sweCur]; common.uSweAux = this.sweA[this.sweAux]; return; }
+    var steps = Math.max(1, Math.min(4, Math.ceil(dt / 0.012))), h = dt / steps;
+    if (dt <= 0) { steps = shift[0] || shift[1] ? 1 : 0; h = 1e-4; }
+    for (var s = 0; s < steps; s++) {
+      var a = this.sweCur, b = 1 - a, au = this.sweAux, ab = 1 - au;
+      var u = { uCell: cell, uDt: h, uSweC: ctr };
+      this._target(this.sweSF[b], N, N);
+      this.progSweAdv.use().set(common).set(u).set({ uSweIn: this.sweS[a], uShift: s === 0 ? shift : [0, 0] });
+      this._fullscreen();
+      this._target(this.sweSF[a], N, N);
+      this.progSweH.use().set(u).set({ uSweIn: this.sweS[b] });
+      this._fullscreen();
+      this._target(this.sweVF[b][ab], N, N);
+      this.progSweVel.use().set(common).set(u).set({ uSweIn: this.sweS[a], uAuxIn: this.sweA[au], uAuxShift: s === 0 ? shift : [0, 0] });
+      this._fullscreen();
+      this.sweCur = b; this.sweAux = ab;
+    }
+    common.uSwe = this.sweS[this.sweCur]; common.uSweAux = this.sweA[this.sweAux];
+  };
+
+  // Advance the lip particles (after the surf step, before drawing).
+  Renderer.prototype._stepLips = function (dt, O, common) {
+    var gl = this.gl, N = this.LIP_N, a = this.lipCur, b = 1 - a;
+    var shift = this.lipO ? [this.lipO[0] - O[0], this.lipO[1] - O[1]] : [0, 0];
+    this.lipO = O.slice();
+    this._target(this.lipF[b], N, N);
+    this.progLipUpdate.use().set(common).set({
+      uPA: this.lipA[a], uPB: this.lipB[a], uDt: Math.min(dt, 0.05), uFrame: (this.lipFrame++) % 65536,
+      uLipRate: this.p.surfSim && dt > 0 ? this.p.lips : 0, uOShift: shift,
+    });
+    this._fullscreen();
+    this.lipCur = b;
+  };
+  // Draw the lips as a liquid surface over the scene, then the surf spray.
+  Renderer.prototype._drawLips = function (common, vp, w, h, camera) {
+    var gl = this.gl, NP = this.LIP_N * this.LIP_N, self = this;
+    var fw = norm3(camera.fwd), rt = norm3(cross3(fw, [0, 1, 0])), upc = cross3(rt, fw);
+    var f = 1 / Math.tan(camera.fov / 2);
+    var pts = { uPA: this.lipA[this.lipCur], uPB: this.lipB[this.lipCur], uViewProj: vp, uRadius: 0.2, uMaxPoint: this.maxPoint };
+    gl.bindVertexArray(this.emptyVao);
+    // 1. eye depth of the nearest lip surface
+    this._target(this.lipZF, this.lipW, this.lipH);
+    gl.clearColor(1e4, 0, 0, 0); gl.clearDepth(1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
+    this.progLipDepth.use().set(pts).set({ uKind: 0, uPointScale: 0.5 * this.lipH * f });
+    gl.drawArrays(gl.POINTS, 0, NP);
+    gl.disable(gl.DEPTH_TEST);
+    // 2. thickness and aeration, additive
+    this._target(this.lipTF, this.lipW, this.lipH);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    this.progLipThick.use().set(pts).set({ uKind: 0, uPointScale: 0.5 * this.lipH * f });
+    gl.drawArrays(gl.POINTS, 0, NP);
+    gl.disable(gl.BLEND);
+    // 3. smooth the depth (separable, edge-preserving)
+    this._target(this.lipZ2F, this.lipW, this.lipH);
+    this.progLipBlur.use().set({ uSrc: this.lipZ, uStep: [1 / this.lipW, 0] });
+    this._fullscreen();
+    this._target(this.lipZBF, this.lipW, this.lipH);
+    this.progLipBlur.use().set({ uSrc: this.lipZ2, uStep: [0, 1 / this.lipH] });
+    this._fullscreen();
+    // 4. composite over a copy of the scene
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.sceneFbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.copyFbo);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    this._target(this.sceneColorFbo, w, h);
+    this.progLipComp.use().set(common).set({
+      uLipZ: this.lipZ, uLipT: this.lipT, uSceneCopy: this.sceneCopy, uSceneDepth: this.sceneDepth,
+      uTanHalf: [Math.tan(camera.fov / 2) * w / h, Math.tan(camera.fov / 2)], uCamRight: rt, uCamUp: upc, uCamFwd: fw,
+      uNear: 0.25, uFar: 30000,
+    });
+    this._fullscreen();
+    // 5. spray from the shattered lips
+    this._target(this.sceneFbo, w, h);
+    gl.enable(gl.DEPTH_TEST); gl.depthMask(false);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindVertexArray(this.emptyVao);
+    this.progSprayPt.use().set(common).set(pts).set({ uKind: 1, uPointScale: 0.5 * h * f });
+    gl.drawArrays(gl.POINTS, 0, NP);
+    gl.disable(gl.BLEND); gl.depthMask(true); gl.disable(gl.DEPTH_TEST);
+    void self;
   };
 
   // An instanced mesh with a 12-float instance layout (see VS_THING).
@@ -2131,14 +2626,31 @@
   Renderer.prototype._resizeTargets = function (w, h) {
     var gl = this.gl;
     if (this.sceneTex) {
-      gl.deleteTexture(this.sceneTex); gl.deleteRenderbuffer(this.sceneDepth); gl.deleteFramebuffer(this.sceneFbo);
+      gl.deleteTexture(this.sceneTex); gl.deleteTexture(this.sceneDepth); gl.deleteFramebuffer(this.sceneFbo); gl.deleteFramebuffer(this.sceneColorFbo);
       this.bloom.forEach(function (b) { gl.deleteTexture(b.tex); gl.deleteFramebuffer(b.fbo); });
     }
     this.sceneTex = this._tex(w, h, gl.RGBA16F, gl.LINEAR, gl.CLAMP_TO_EDGE);
-    this.sceneDepth = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, this.sceneDepth);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+    // scene depth as a texture: the lip surface tests itself against it
+    this.sceneDepth = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneDepth);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, w, h);
+    this._params(gl.NEAREST, gl.CLAMP_TO_EDGE);
     this.sceneFbo = this._mrt([this.sceneTex], this.sceneDepth);
+    this.sceneColorFbo = this._mrt([this.sceneTex]);
+    // half-resolution lip surface targets
+    if (this.lipZ) { [this.lipZ, this.lipT, this.lipZ2].forEach(function (t) { gl.deleteTexture(t); }); gl.deleteRenderbuffer(this.lipDepthRB); }
+    var hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1);
+    this.lipZ = this._tex(hw, hh, gl.RGBA16F, gl.LINEAR, gl.CLAMP_TO_EDGE);
+    this.lipZ2 = this._tex(hw, hh, gl.RGBA16F, gl.LINEAR, gl.CLAMP_TO_EDGE);
+    this.lipT = this._tex(hw, hh, gl.RGBA16F, gl.LINEAR, gl.CLAMP_TO_EDGE);
+    this.lipDepthRB = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.lipDepthRB);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, hw, hh);
+    this.lipZF = this._mrt([this.lipZ], this.lipDepthRB);
+    this.lipZ2F = this._mrt([this.lipZ2]);
+    this.lipZBF = this._mrt([this.lipZ]);
+    this.lipTF = this._mrt([this.lipT]);
+    this.lipW = hw; this.lipH = hh;
     if (this.sceneCopy) { gl.deleteTexture(this.sceneCopy); gl.deleteFramebuffer(this.copyFbo); }
     this.sceneCopy = this._tex(w, h, gl.RGBA16F, gl.LINEAR, gl.CLAMP_TO_EDGE);
     this.copyFbo = this._mrt([this.sceneCopy]);
@@ -2273,6 +2785,8 @@
     // Ripples, then water height at the camera and the probe points.
     this._readProbes();
     this._stepRipples(dt * p.timeScale, camera.rippleCentre || camera.pos, O, common);
+    this._stepSurf(dt * p.timeScale, camera.rippleCentre || camera.pos, O, common);
+    this._stepLips(dt * p.timeScale, O, common);
     var pp = this.probePts;
     for (var pi = 0; pi < 64; pi++) {
       var pw = this.probeWorld && this.probeWorld[pi];
@@ -2400,6 +2914,10 @@
     this.progWater.use().set(common).set({ uViewProj: vp, uFoamStr: p.foam > 0 ? 0.6 + p.foam : 0, uSceneCopy: this.sceneCopy, uInvRes: [1 / w, 1 / h] });
     gl.bindVertexArray(this.waterMesh.vao);
     gl.drawElements(gl.TRIANGLES, this.waterMesh.count, gl.UNSIGNED_INT, 0);
+    gl.disable(gl.DEPTH_TEST);
+    if (p.surfSim) this._drawLips(common, vp, w, h, camera);
+    this._target(this.sceneFbo, w, h);
+    gl.enable(gl.DEPTH_TEST);
     // spray over everything, depth-tested but not written
     var spray = this.spray;
     spray.n = 0;

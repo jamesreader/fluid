@@ -65,6 +65,7 @@
     this.rnd = mulberry32(31337);
     this.objects = [];
     this.probeH = new Float32Array(MAX_PROBES);     // last measured surface heights
+    this.probeC = new Float32Array(MAX_PROBES * 2); // and surf currents (x, z)
     this.probeOK = false;
     this.drops = [];
     this.pPos = new Float32Array(MAX_PART * 3);
@@ -93,9 +94,10 @@
     this._pts = pts;
     return pts;
   };
-  Playground.prototype.setProbes = function (heights) {
+  Playground.prototype.setProbes = function (heights, currents) {
     if (!heights) return;
     for (var i = 0; i < MAX_PROBES; i++) this.probeH[i] = heights[i];
+    if (currents) for (i = 0; i < MAX_PROBES * 2; i++) this.probeC[i] = currents[i];
     this.probeOK = true;
   };
   // Water height and slope from an object's three probes. Each object keeps
@@ -103,9 +105,9 @@
   // object assumes a flat sea until its own measurements come back.
   var PROBE_LAG = 6;
   Playground.prototype._water = function (o) {
-    if (!this.probeOK || o.age < PROBE_LAG) return { h: 0, sx: 0, sz: 0 };
+    if (!this.probeOK || o.age < PROBE_LAG) return { h: 0, sx: 0, sz: 0, cx: 0, cz: 0 };
     var s = OBJ_SLOT + 3 * o.slot, h = this.probeH[s];
-    return { h: h, sx: (this.probeH[s + 1] - h) / 0.5, sz: (this.probeH[s + 2] - h) / 0.5 };
+    return { h: h, sx: (this.probeH[s + 1] - h) / 0.5, sz: (this.probeH[s + 2] - h) / 0.5, cx: this.probeC[s * 2], cz: this.probeC[s * 2 + 1] };
   };
 
   // ------------------------------------------------------------- objects
@@ -149,6 +151,8 @@
       o.vel[2] = (o.vel[2] + az * dt) * damp;
       // extra heave damping at the surface (radiated waves)
       if (f > 0 && f < 1) o.vel[1] *= Math.exp(-2.5 * dt);
+      // surf currents carry what floats: bores shoreward, backwash out
+      if (f > 0) { var kc = 1 - Math.exp(-4 * Math.min(1, carried + f) * dt); o.vel[0] += (wat.cx - o.vel[0]) * kc; o.vel[2] += (wat.cz - o.vel[2]) * kc; }
       o.pos[0] += o.vel[0] * dt; o.pos[1] += o.vel[1] * dt; o.pos[2] += o.vel[2] * dt;
       // ground: bounce and roll
       g = self.ground(o.pos[0], o.pos[2]);
@@ -287,7 +291,11 @@
     for (k = 0; k < H.length; k++) H[k] = Math.max(H[k], Math.min(gC, gB) - 3);
     var hBow = (H[0] + H[4] + H[5]) / 3, hStern = (H[1] + H[6] + H[7]) / 3, hPort = (H[2] + H[4] + H[6]) / 3, hStar = (H[3] + H[5] + H[7]) / 3;
     var hMean = (hBow + hStern) / 2;
-    var speedF = b.vel[0] * c + b.vel[2] * s, speedS = b.vel[0] * side[0] + b.vel[2] * side[1];
+    // the water under the hull moves too (surf currents): the keel and drag act on the difference
+    var cx = 0, cz = 0;
+    if (this.probeOK) for (k = 0; k < HULL.length; k++) { cx += this.probeC[(BOAT_SLOT + k) * 2] / HULL.length; cz += this.probeC[(BOAT_SLOT + k) * 2 + 1] / HULL.length; }
+    var rvx = b.vel[0] - cx, rvz = b.vel[2] - cz;
+    var speedF = rvx * c + rvz * s, speedS = rvx * side[0] + rvz * side[1];
     var draft = 0.28, d = hMean - b.pos[1] + draft, wet = clamp(d / draft, 0, 1);
     var airborne = b.air;                              // time in the air before this step
     b.air = wet <= 0 ? b.air + dt : 0;

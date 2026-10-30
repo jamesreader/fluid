@@ -508,6 +508,7 @@ function lagoonMain() {
   var CONTROLS = [
     ["Waves"],
     ["surf", "surf", 0, 3, 0.05, " m", 2, "height of the swell that breaks on the reef and the beaches"],
+    ["lips", "lip throw", 0, 1, 0.05, "", 2, "how readily breaking waves throw a curling lip (the simulated barrels)"],
     ["wind", "wind", 0.5, 20, 0.5, " m/s", 1, "wind speed at 10 m: raises wave height and period"],
     ["windDir", "wind heading", 0, 355, 5, "°", 0, "direction wind and swell travel toward"],
     ["fetch", "fetch", 1, 300, 1, " km", 0, "open water upwind: longer fetch, longer and bigger waves"],
@@ -548,6 +549,9 @@ function lagoonMain() {
   var meshRow = row('<label for="ui-mesh">mesh detail</label><select id="ui-mesh" title="vertices per side of the water grid"><option>192</option><option>256</option><option>384</option><option>512</option></select>');
   var meshSel = meshRow.querySelector("select");
   meshSel.addEventListener("change", function () { params.meshDetail = +meshSel.value; renderer.setParams({ meshDetail: params.meshDetail }); store(); });
+  var simRow = row('<label for="ui-sim">simulate the surf</label><input type="checkbox" id="ui-sim" title="shallow-water surf zone and curling lips around you (off: the analytic waves of v1)">');
+  var simChk = simRow.querySelector("input");
+  simChk.addEventListener("change", function () { params.surfSim = simChk.checked; renderer.setParams({ surfSim: params.surfSim }); store(); });
   var bloomRow = row('<label for="ui-bloom">sun glare</label><input type="checkbox" id="ui-bloom">');
   var bloomChk = bloomRow.querySelector("input");
   bloomChk.addEventListener("change", function () { params.bloom = bloomChk.checked; renderer.setParams({ bloom: params.bloom }); store(); });
@@ -582,6 +586,7 @@ function lagoonMain() {
     });
     meshSel.value = String(params.meshDetail);
     bloomChk.checked = !!params.bloom;
+    simChk.checked = !!params.surfSim;
     crChk.checked = cruise;
     fovInp.value = Math.round(cam.fov * 180 / Math.PI); fovOut.textContent = fovInp.value + "°";
     syncSpeed();
@@ -644,7 +649,7 @@ function lagoonMain() {
     moveCamera(dt);
     resize();
     var sdt = paused ? 0 : dt * params.timeScale;
-    play.setProbes(renderer.probeResults());
+    play.setProbes(renderer.probeResults(), renderer.probeCurrentResults());
     play.update(sdt, renderer.time, cam.pos, params.surf);
     renderer.setProbePoints(play.probePoints());
     renderer.addDrops(play.takeDrops());
