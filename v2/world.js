@@ -186,7 +186,59 @@
         }
       }
     });
+    // The reef break: a coral ledge running out from the end of the barrier
+    // reef at ~45 degrees to the incoming crests, shallow on top, with deep
+    // water right up to its up-wave face. A wave catches the outer tip first
+    // and the break peels down the ledge toward the beach.
+    var reef = reefBreakFrame();
+    for (var jj2 = 0; jj2 < N; jj2++) {
+      var pz = -HALF + (jj2 + 0.5) * DX;
+      for (var ii2 = 0; ii2 < N; ii2++) {
+        var px = -HALF + (ii2 + 0.5) * DX, kk2 = jj2 * N + ii2;
+        var rx = px - reef.p0[0], rz = pz - reef.p0[1];
+        var along = rx * reef.dir[0] + rz * reef.dir[1], across = rx * reef.side[0] + rz * reef.side[1];
+        if (along < -90 || along > reef.len + 70 || Math.abs(across) > 130) continue;
+        var t = clamp01(along / reef.len);
+        // a gently bowed, uneven ledge: the centre line wanders, the width
+        // swells mid-way, the edges are ragged at a few metres
+        var centre = 14 * Math.sin(t * Math.PI * 1.15) + 7 * nReef(along / 55 + 3, 1.7);
+        var half = (11 + 11 * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.05 + 0.04)), 0.7) + 4 * nReef(along / 22 - 5, 4.1)) * smoothstep(-85, 15, along);   // tapers to a point at the inner end
+        var ac = across - centre, ed = Math.abs(ac) - half + 3.5 * nReef(px / 7 + 2, pz / 7 - 3) + 1.5 * nReef(px / 2.5, pz / 2.5);
+        var top = -(0.9 + 1.6 * t + 0.3 * nReef(px / 9, pz / 9) + 0.15 * nReef(px / 3, pz / 3));   // reef top deepens toward the tip
+        // steep face on the up-wave side, gentler back toward the lagoon
+        var face = ac > 0 ? 0.8 : 0.24;
+        var hr = top - Math.max(0, ed) * face;
+        // rounded tip; the inner end runs into the beach shelf
+        var tipD = Math.max(0, along - reef.len);
+        hr -= tipD * tipD / 140;
+        var endFade = (1 - smoothstep(reef.len + 25, reef.len + 70, along)) * smoothstep(-90, -30, along);
+        hr = hr * endFade + height[kk2] * (1 - endFade);
+        // deep water hugging the face: the swell arrives unbroken
+        var trench = ac > half ? smoothstep(half, half + 14, ac) * (1 - smoothstep(half + 40, half + 95, ac)) * endFade * smoothstep(0, 40, along) : 0;
+        var deep = Math.min(height[kk2], -7 - 3 * t);
+        var base = height[kk2] * (1 - trench) + deep * trench;
+        if (hr > base && height[kk2] < 0.5) {
+          height[kk2] = Math.min(hr, -0.6);
+          coral[kk2] = Math.max(coral[kk2], 1 - smoothstep(-2, 4, ed) * endFade);
+        } else if (height[kk2] < 0) height[kk2] = Math.min(height[kk2], base);
+      }
+    }
     return { height: height, coral: coral, tone: tone, peak: peak };
+  }
+
+  // Where the reef break sits: p0 is its inner end near the beach, dir runs
+  // out along the ledge, side points to its up-wave face.
+  function reefBreakFrame() {
+    var a0 = WINDWARD + 0.5;                              // near the end of the open sector
+    var p0 = [Math.cos(a0) * 395, Math.sin(a0) * 395];
+    var sw = 35 * Math.PI / 180, crest = [-Math.sin(sw), Math.cos(sw)];   // crest lines of the swell
+    // the ledge runs 45 degrees off the crests, seaward
+    var ang = Math.atan2(crest[1], crest[0]) + 45 * Math.PI / 180;
+    var dir = [Math.cos(ang), Math.sin(ang)];
+    if (dir[0] * Math.cos(a0) + dir[1] * Math.sin(a0) < 0) { ang -= Math.PI / 2; dir = [Math.cos(ang), Math.sin(ang)]; }
+    var side = [-dir[1], dir[0]];
+    if (side[0] * -Math.cos(sw) + side[1] * -Math.sin(sw) < 0) side = [-side[0], -side[1]];   // face the incoming swell
+    return { p0: p0, dir: dir, side: side, len: 230 };
   }
 
   // ------------------------------------------------- distance / travel time
@@ -767,7 +819,7 @@
 
   return {
     N: N, SIZE: SIZE, DX: DX, HALF: HALF, OCEAN_FLOOR: OCEAN_FLOOR, SWELL_T: SWELL_T, SWASH_C: SWASH_C,
-    WINDWARD: WINDWARD, GROUP: GROUP,
+    WINDWARD: WINDWARD, GROUP: GROUP, reefBreakFrame: reefBreakFrame,
     build: build, setSwell: setSwell, heightAt: heightAt, bilinear: bilinear,
     scatterPlants: scatterPlants, palmMesh: palmMesh, canopyMesh: canopyMesh, coralMeshes: coralMeshes,
     fishMesh: fishMesh, turtleMesh: turtleMesh, rayMesh: rayMesh,
