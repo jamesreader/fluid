@@ -252,7 +252,7 @@
   }
 
   // ===================================================================== GLSL
-  var HEAD = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n#define PI 3.14159265359\n#define TAU 6.28318530718\n";
+  var HEAD = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp sampler2DShadow;\n#define PI 3.14159265359\n#define TAU 6.28318530718\n";
 
   var VS_FULL = HEAD + [
     "out vec2 vUv;",
@@ -536,6 +536,26 @@
     "}",
   ].join("\n");
 
+  // Sun shadow map of palms, trees and objects near the camera (ortho, follows
+  // the camera); outside it everything counts as lit.
+  var C_SHADOW = [
+    "uniform sampler2DShadow uShadowMap;",
+    "uniform mat4 uShadowMat;",    // O-relative world -> shadow map (0..1)
+    "uniform float uShadowOn;",
+    "float sunVis(vec3 p, float bias) {",
+    "  if (uShadowOn < 0.5) return 1.0;",
+    "  vec4 q = uShadowMat * vec4(p, 1.0);",
+    "  vec2 e2 = abs(q.xy - 0.5) * 2.0;",
+    "  float edge = smoothstep(0.85, 0.98, max(e2.x, e2.y));",
+    "  if (edge >= 1.0 || q.z >= 1.0) return 1.0;",
+    "  float d = q.z - bias, k = 1.0 / 2048.0;",
+    "  float v = texture(uShadowMap, vec3(q.xy, d)) * 0.4",
+    "          + (texture(uShadowMap, vec3(q.xy + vec2(k, 0.0), d)) + texture(uShadowMap, vec3(q.xy - vec2(k, 0.0), d))",
+    "          +  texture(uShadowMap, vec3(q.xy + vec2(0.0, k), d)) + texture(uShadowMap, vec3(q.xy - vec2(0.0, k), d))) * 0.15;",
+    "  return mix(v, 1.0, edge);",
+    "}",
+  ].join("\n");
+
   // Ground shading shared by the terrain pass and the floor seen through the water.
   var C_WATER = [
     "uniform vec3 uSigT, uSigS;",   // extinction / scattering per metre
@@ -693,7 +713,7 @@
     // under water the sand reads like wet sand at the waterline, then brightens
     "  float z = max(-hit.y, 0.0);",
     "  alb *= mix(0.68, 1.0, smoothstep(0.0, 1.2, z));",
-    "  return lightGround(hit, n, alb, z, dist, shadow);",
+    "  return lightGround(hit, n, alb, z, dist, shadow * sunVis(hit, 0.002));",
     "}",
     // Distant ground fades into the horizon haze.
     "vec3 aerial(vec3 col, vec3 dir, float dist) {",
@@ -781,7 +801,7 @@
   ].join("\n");
 
   // Background: sky (camera above water) or the underwater view of the floor.
-  var FS_BACK = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_CLOUDS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
+  var FS_BACK = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_CLOUDS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
     "uniform sampler2D uProbe;",
     "uniform mat4 uInvViewProj;",
     "uniform vec3 uSunDisk;",       // sun disk radiance
@@ -835,7 +855,7 @@
     "}",
   ].join("\n");
 
-  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
+  var FS_WATER = HEAD + C_COMMON + "\n" + C_OCEAN + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + C_FRESNEL + "\n" + [
     "uniform sampler2D uProbe;",
     "uniform float uFoamStr;",
     "in vec2 vXZ;",
@@ -878,7 +898,7 @@
     "    vec3 T = refract(-V, Nr, 1.0 / 1.333);",
     "    float t = traceGround(P, T);",
     "    vec3 hit = P + T * t;",
-    "    float shadow = terrainShadow(P, 0.0);",
+    "    float shadow = terrainShadow(P, 0.0) * sunVis(P, 0.002);",
     // a raised crest is a thicker body of water to look through
     "    float body = max(P.y + 0.25 * sw.H, 0.0) * sat(1.2 - N.y) * 3.0;",
     "    vec3 refr = throughWater(shadeFloor(hit, dist + t, shadow), t + body, 0.5 * max(-hit.y, 0.0));",
@@ -944,7 +964,7 @@
     "  gl_Position = uViewProj * vec4(vPos, 1.0);",
     "}",
   ].join("\n");
-  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_WATER + "\n" + [
+  var FS_TERRAIN = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHORE + "\n" + C_SHADOW + "\n" + C_WATER + "\n" + [
     "uniform sampler2D uProbe;",
     "in vec3 vPos;",
     "out vec4 o;",
@@ -972,7 +992,7 @@
     "    wet = max(wet, wet2);",
     "  }",
     "  n = sandNormal(w, n, dist, (1.0 - smoothstep(1.5, 4.0, wd.x)) * 0.6);",
-    "  float shadow = terrainShadow(P, lod);",
+    "  float shadow = terrainShadow(P, lod) * sunVis(P + n * 0.05, 0.0015);",
     "  float z = max(-P.y, 0.0);",
     "  vec3 col = lightGround(P, n, alb, z, dist, shadow);",
     // wet sand shines in the sun
@@ -981,6 +1001,115 @@
     "  if (under) col = throughWater(col, dist, 0.5 * (max(-uCam.y, 0.0) + z));",
     "  else col = aerial(col, -V, dist);",
     "  o = vec4(min(col, vec3(3e4)), 1.0);",
+    "}",
+  ].join("\n");
+
+  // Plants: instanced palms (kind 0 trunk, 1 frond, 2 coconut) and canopy
+  // trees (kind 3). Per instance: position (O-relative) and size; rotation,
+  // lean (palms) or squash (trees), phase, tint; island-shadow visibility.
+  var VS_PLANT = HEAD + C_COMMON + "\n" + [
+    "in vec3 aPos;",
+    "in vec3 aNrm;",
+    "in vec2 aUV;",
+    "in float aKind;",
+    "in vec4 aInst0;",
+    "in vec4 aInst1;",
+    "in float aInst2;",
+    "uniform mat4 uViewProj;",
+    "uniform vec2 uWindXZ;",
+    "uniform float uWindStr;",
+    "out vec3 vPos, vN;",
+    "out vec2 vUV;",
+    "out float vKind, vTint, vVis, vH;",
+    "void main() {",
+    "  vec3 p = aPos, n = aNrm;",
+    "  float sz = aInst0.w;",
+    "  if (aKind < 2.5) {",
+    "    p.x += (aInst1.y - 1.0) * 0.16 * p.y * p.y;",   // lean: shear the trunk's curve
+    "    if (aKind > 0.5 && aKind < 1.5) p.y += sin(uTime * 3.1 + aInst1.z * 5.0 + aUV.y * 3.0) * 0.012 * aUV.y * uWindStr;",
+    "  } else {",
+    "    p.y = p.y * aInst1.y + 0.55;",
+    "    n = normalize(vec3(n.x, n.y / aInst1.y, n.z));",
+    "  }",
+    "  float c = cos(aInst1.x), sn = sin(aInst1.x);",
+    "  p = vec3(c * p.x - sn * p.z, p.y, sn * p.x + c * p.z);",
+    "  n = vec3(c * n.x - sn * n.z, n.y, sn * n.x + c * n.z);",
+    "  float hy = p.y;",
+    "  p *= sz;",
+    "  p.xz += uWindXZ * (0.6 + 0.4 * sin(uTime * 1.2 + aInst1.z)) * uWindStr * 0.035 * hy * hy * sz;",
+    "  vPos = aInst0.xyz + p; vN = n; vUV = aUV; vKind = aKind; vTint = aInst1.w; vVis = aInst2; vH = hy;",
+    "  gl_Position = uViewProj * vec4(vPos, 1.0);",
+    "}",
+  ].join("\n");
+  // Leaflets: diagonal slats off the rachis, ragged at the tips; they merge
+  // into a solid blade once smaller than a pixel so far fronds don't sparkle.
+  var C_LEAF = [
+    "bool leafGap(vec2 uv) {",
+    "  float x = abs(uv.x), y = uv.y, g = y * 46.0 + x * 5.0;",
+    "  float keep = mix(0.58, 1.01, sat(fwidth(g) * 1.2 - 0.2));",
+    "  float edge = 1.0 - 0.2 * fract(g * 0.5) - 0.3 * smoothstep(0.7, 1.0, y);",
+    "  return x > 0.08 && (fract(g) > keep || x > edge);",
+    "}",
+  ].join("\n");
+  var FS_PLANT = HEAD + C_COMMON + "\n" + C_NOISE + "\n" + C_ATMOS + "\n" + C_ENV + "\n" + C_WORLD + "\n" + C_SHADOW + "\n" + C_LEAF + "\n" + [
+    "uniform vec2 uOffD;",
+    "in vec3 vPos, vN;",
+    "in vec2 vUV;",
+    "in float vKind, vTint, vVis, vH;",
+    "out vec4 o;",
+    "vec3 aerialP(vec3 col, vec3 dir, float dist) {",
+    "  float f = 1.0 - exp(-dist / 9000.0);",
+    "  return mix(col, atmosphere(normalize(vec3(dir.x, max(dir.y, 0.02), dir.z))), f);",
+    "}",
+    "void main() {",
+    "  bool frond = vKind > 0.5 && vKind < 1.5;",
+    "  if (frond && leafGap(vUV)) discard;",
+    "  vec3 n = normalize(vN);",
+    "  if (!gl_FrontFacing) n = -n;",
+    "  vec3 P = vPos, toEye = uCam - P;",
+    "  float dist = length(toEye);",
+    "  vec3 V = toEye / dist;",
+    "  vec2 w = P.xz + uOffD;",
+    "  vec3 alb; float trans = 0.0, ao = 1.0;",
+    "  if (vKind < 0.5) {",                         // trunk: grey-brown with leaf-scar rings
+    "    alb = vec3(0.42, 0.38, 0.31) * (0.8 + 0.2 * sin(vUV.y * TAU)) * (0.85 + 0.3 * vTint);",
+    "  } else if (frond) {",
+    "    alb = mix(vec3(0.07, 0.17, 0.035), vec3(0.16, 0.24, 0.05), vTint);",
+    "    alb = mix(alb, vec3(0.34, 0.31, 0.11), smoothstep(0.55, 1.0, vUV.y) * (0.3 + 0.5 * vTint));",
+    "    alb *= 0.85 + 0.3 * abs(vUV.x);",
+    "    trans = 0.55;",
+    "  } else if (vKind < 2.5) {",
+    "    alb = vec3(0.24, 0.25, 0.07);",
+    "  } else {",                                   // canopy
+    "    alb = mix(vec3(0.035, 0.085, 0.025), vec3(0.10, 0.16, 0.045), vTint);",
+    "    if (vTint > 0.992) alb = vec3(0.30, 0.11, 0.05);",   // the odd flame tree
+    "    float leaves = vnoise(w * 0.9 + vPos.y * 0.7) * 0.6 + vnoise(w * 3.7) * 0.4;",
+    "    alb *= 0.7 + 0.6 * leaves;",
+    "    n = normalize(n + 0.35 * vec3(leaves - 0.5, 0.0, vnoise(w * 1.3) - 0.5));",
+    "    ao = mix(0.45, 1.0, sat(vH * 0.8 + 0.2));",
+    "    trans = 0.3;",
+    "  }",
+    "  float vis = vVis * sunVis(P + n * 0.08, 0.002);",
+    "  vec3 sky = PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb;",
+    "  float ndl = dot(n, uSunDir);",
+    // sunlight bounced up from the ground (white sand near the beach)
+    "  float ground = mix(0.12, 0.55, 1.0 - smoothstep(2.0, 8.0, P.y));",
+    "  vec3 bounce = uSunCol * max(uSunDir.y, 0.0) * ground * (0.5 - 0.5 * n.y);",
+    "  vec3 col = alb * (uSunCol * (max(ndl, 0.0) + trans * max(-ndl, 0.0) * 0.7) * vis + sky * (0.45 + 0.35 * n.y) * ao + bounce * ao) / PI;",
+    // sunlight through the leaves when you look toward the sun
+    "  col += alb * uSunCol * trans * 0.25 * pow(sat(dot(-V, uSunDir)), 4.0) * vis / PI * 3.0;",
+    "  col = aerialP(col, -V, dist);",
+    "  o = vec4(min(col, vec3(3e4)), 1.0);",
+    "}",
+  ].join("\n");
+  var FS_PLANT_SHADOW = HEAD + C_COMMON + "\n" + C_LEAF + "\n" + [
+    "in vec3 vPos, vN;",
+    "in vec2 vUV;",
+    "in float vKind, vTint, vVis, vH;",
+    "out vec4 o;",
+    "void main() {",
+    "  if (vKind > 0.5 && vKind < 1.5 && leafGap(vUV)) discard;",
+    "  o = vec4(1.0);",
     "}",
   ].join("\n");
 
@@ -1054,9 +1183,10 @@
     // fixed locations so one grid VAO serves the water and the terrain
     gl.bindAttribLocation(p, 0, "aPos");
     gl.bindAttribLocation(p, 1, "aCell");
+    ["aNrm", "aUV", "aKind", "aInst0", "aInst1", "aInst2"].forEach(function (n, i) { gl.bindAttribLocation(p, 2 + i, n); });
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(label + " link: " + gl.getProgramInfoLog(p));
-    SAMPLER_TYPES[gl.SAMPLER_2D] = 1;
+    SAMPLER_TYPES[gl.SAMPLER_2D] = 1; SAMPLER_TYPES[gl.SAMPLER_2D_SHADOW] = 1;
     this.gl = gl; this.p = p; this.u = {};
     gl.useProgram(p);
     var n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS), unit = 0;
@@ -1092,6 +1222,20 @@
   function perspective(fovy, aspect, near, far) {
     var f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
     return new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1, 0, 0, 2 * far * near * nf, 0]);
+  }
+  function ortho(l, r, b, t, n, f) {
+    return new Float32Array([2 / (r - l), 0, 0, 0, 0, 2 / (t - b), 0, 0, 0, 0, -2 / (f - n), 0,
+      -(r + l) / (r - l), -(t + b) / (t - b), -(f + n) / (f - n), 1]);
+  }
+  // Frustum planes (a, b, c, d; inside when a x + b y + c z + d > 0) from a view-projection matrix.
+  function frustumPlanes(m) {
+    var P = [], rows = [[m[0], m[4], m[8], m[12]], [m[1], m[5], m[9], m[13]], [m[2], m[6], m[10], m[14]], [m[3], m[7], m[11], m[15]]];
+    [[3, 0, 1], [3, 0, -1], [3, 1, 1], [3, 1, -1], [3, 2, 1], [3, 2, -1]].forEach(function (c) {
+      var a = rows[c[0]], b = rows[c[1]], pl = [a[0] + c[2] * b[0], a[1] + c[2] * b[1], a[2] + c[2] * b[2], a[3] + c[2] * b[3]];
+      var l = Math.hypot(pl[0], pl[1], pl[2]);
+      P.push([pl[0] / l, pl[1] / l, pl[2] / l, pl[3] / l]);
+    });
+    return P;
   }
   function lookDir(eye, fwd) {   // view matrix from eye + forward (y up)
     var f = norm3(fwd), s = norm3(cross3(f, [0, 1, 0])), u = cross3(s, f);
@@ -1171,6 +1315,8 @@
     this.progBack = mk(VS_FULL, FS_BACK, "background");
     this.progWater = mk(VS_WATER, FS_WATER, "water");
     this.progTerrain = mk(VS_TERRAIN, FS_TERRAIN, "terrain");
+    this.progPlant = mk(VS_PLANT, FS_PLANT, "plants");
+    this.progPlantShadow = mk(VS_PLANT, FS_PLANT_SHADOW, "plant shadows");
     this.progDown = mk(VS_FULL, FS_DOWN, "bloom down");
     this.progUp = mk(VS_FULL, FS_UP, "bloom up");
     this.progComposite = mk(VS_FULL, FS_COMPOSITE, "composite");
@@ -1222,6 +1368,21 @@
 
     this._buildCausticMesh(384);
     this._buildWaterMesh(this.p.meshDetail);
+    this._buildPlants();
+    this.shadowMap = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowMap);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, 2048, 2048);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+    this.shadowFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this.shadowMap, 0);
+    gl.drawBuffers([gl.NONE]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.spectrumDirty = true;
     this.width = 0; this.height = 0;
   }
@@ -1277,6 +1438,88 @@
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return f;
   };
+  // Instanced plant meshes: static vertex data plus a per-frame instance
+  // buffer for each draw (camera view and shadow map).
+  Renderer.prototype._buildPlants = function () {
+    var gl = this.gl, w = this.world, self = this;
+    // Each kind gets three draws: near and far LOD for the camera, and the
+    // near mesh again for the shadow map.
+    function kind(meshNear, meshFar, data, stride) {
+      var k = { data: data, n: data.length / stride, sunKey: "" };
+      k.vis = new Float32Array(k.n).fill(1);
+      k.inst = new Float32Array(k.n * 9);
+      k.instFar = new Float32Array(k.n * 9);
+      ["main", "far", "shadow"].forEach(function (pass) {
+        var mesh = pass === "far" ? meshFar : meshNear;
+        var vao = gl.createVertexArray(), vb = gl.createBuffer(), ib = gl.createBuffer(), ibuf = gl.createBuffer();
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+        gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
+        [[0, 3, 0], [2, 3, 3], [3, 2, 6], [4, 1, 8]].forEach(function (a) {
+          gl.enableVertexAttribArray(a[0]);
+          gl.vertexAttribPointer(a[0], a[1], gl.FLOAT, false, 36, a[2] * 4);
+        });
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+        gl.bufferData(gl.ARRAY_BUFFER, k.inst.byteLength, gl.DYNAMIC_DRAW);
+        [[5, 4, 0], [6, 4, 4], [7, 1, 8]].forEach(function (a) {
+          gl.enableVertexAttribArray(a[0]);
+          gl.vertexAttribPointer(a[0], a[1], gl.FLOAT, false, 36, a[2] * 4);
+          gl.vertexAttribDivisor(a[0], 1);
+        });
+        gl.bindVertexArray(null);
+        k[pass] = { vao: vao, buf: ibuf, n: 0, count: mesh.indices.length };
+      });
+      return k;
+    }
+    this.palms = kind(w.palmMesh(7, false), w.palmMesh(7, true), w.plants.palms, 8);
+    this.trees = kind(w.canopyMesh(7, false), w.canopyMesh(7, true), w.plants.trees, 8);
+    this.palms.radius = 1.0; this.trees.radius = 1.3;
+    void self;
+  };
+  // Island shadow on each plant (heightfield march toward the sun), redone
+  // when the sun moves; per pixel this would cost far more.
+  Renderer.prototype._plantSun = function (k, sun, key) {
+    if (k.sunKey === key) return;
+    k.sunKey = key;
+    var w = this.world, d = k.data;
+    for (var i = 0; i < k.n; i++) {
+      var x = d[i * 8], y = d[i * 8 + 1] + d[i * 8 + 3] * 0.7, z = d[i * 8 + 2], s = 1, t = 1.5;
+      if (sun[1] < 0.01) { k.vis[i] = 0; continue; }
+      for (var st = 0; st < 20; st++) {
+        var qy = y + sun[1] * t;
+        if (qy > this.maxH) break;
+        var hq = w.heightAt(w, x + sun[0] * t, z + sun[2] * t);
+        s = Math.min(s, Math.max(0, Math.min(1, (qy - hq) / (0.05 * t + 0.4))));
+        t = t * 1.38 + 1.2;
+      }
+      k.vis[i] = s;
+    }
+  };
+  // Fill instance buffers with the plants that pass the test; with farFrom
+  // set, those beyond 300 m of that point go to the far-LOD draw.
+  Renderer.prototype._fillPlants = function (k, pass, O, test, farFrom) {
+    var d = k.data, gl = this.gl, n = 0, nf = 0, out = k.inst, outF = k.instFar;
+    for (var i = 0; i < k.n; i++) {
+      var o = i * 8, x = d[o] - O[0], y = d[o + 1], z = d[o + 2] - O[1], r = d[o + 3] * k.radius;
+      if (!test(x, y + r * 0.5, z, r)) continue;
+      var far = farFrom && (x - farFrom[0]) * (x - farFrom[0]) + (z - farFrom[2]) * (z - farFrom[2]) > 300 * 300;
+      var buf = far ? outF : out, q = (far ? nf++ : n++) * 9;
+      buf[q] = x; buf[q + 1] = y; buf[q + 2] = z; buf[q + 3] = d[o + 3];
+      buf[q + 4] = d[o + 4]; buf[q + 5] = d[o + 5]; buf[q + 6] = d[o + 6]; buf[q + 7] = d[o + 7]; buf[q + 8] = k.vis[i];
+    }
+    var P = k[pass];
+    P.n = n;
+    gl.bindBuffer(gl.ARRAY_BUFFER, P.buf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, out, 0, n * 9);
+    if (farFrom) {
+      k.far.n = nf;
+      gl.bindBuffer(gl.ARRAY_BUFFER, k.far.buf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, outF, 0, nf * 9);
+    }
+  };
+
   Renderer.prototype._grid = function (n, attribs) {
     var gl = this.gl, vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1528,7 +1771,46 @@
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.bindTexture(gl.TEXTURE_2D, this.env); gl.generateMipmap(gl.TEXTURE_2D);
 
-    // Scene: background, then the water surface.
+    // Plants: cull to the view and to the shadow box around the camera.
+    var sunKey = sun.map(function (v) { return v.toFixed(4); }).join();
+    this._plantSun(this.palms, sun, sunKey);
+    this._plantSun(this.trees, sun, sunKey);
+    var planes = frustumPlanes(vp);
+    var inView = function (x, y, z, r) {
+      if ((x - cam[0]) * (x - cam[0]) + (z - cam[2]) * (z - cam[2]) > 5000 * 5000) return false;
+      for (var q = 0; q < 6; q++) { var pl = planes[q]; if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -r) return false; }
+      return true;
+    };
+    // shadow box: SHADOW_R metres around the camera, snapped to texels so
+    // shadows don't crawl as the camera moves
+    var SR = 110, f = [-sun[0], -sun[1], -sun[2]], right = norm3(cross3(f, [0, 1, 0])), upv = cross3(right, f);
+    var texel = 2 * SR / 2048, cr = dot3(cam, right), cu = dot3(cam, upv), cf = dot3(cam, f);
+    cr = Math.round(cr / texel) * texel; cu = Math.round(cu / texel) * texel;
+    var center = [right[0] * cr + upv[0] * cu + f[0] * cf, right[1] * cr + upv[1] * cu + f[1] * cf, right[2] * cr + upv[2] * cu + f[2] * cf];
+    var lightView = lookDir([center[0] - f[0] * 600, center[1] - f[1] * 600, center[2] - f[2] * 600], f);
+    var lightVP = mul4(ortho(-SR, SR, -SR, SR, 1, 1400), lightView);
+    var inBox = function (x, y, z, r) {
+      var dx = x - center[0], dy = y - center[1], dz = z - center[2];
+      return Math.abs(dx * right[0] + dy * right[1] + dz * right[2]) < SR + r && Math.abs(dx * upv[0] + dy * upv[1] + dz * upv[2]) < SR + r;
+    };
+    var self2 = this;
+    [this.palms, this.trees].forEach(function (k) { self2._fillPlants(k, "main", O, inView, cam); self2._fillPlants(k, "shadow", O, inBox); });
+    var windRad = p.windDir * Math.PI / 180, plantU = { uWindXZ: [Math.cos(windRad), Math.sin(windRad)], uWindStr: Math.min(p.wind / 6, 2.5) };
+    this._target(this.shadowFbo, 2048, 2048);
+    gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
+    this.progPlantShadow.use().set(common).set(plantU).set({ uViewProj: lightVP });
+    [this.palms, this.trees].forEach(function (k) {
+      if (!k.shadow.n) return;
+      gl.bindVertexArray(k.shadow.vao);
+      gl.drawElementsInstanced(gl.TRIANGLES, k.shadow.count, gl.UNSIGNED_SHORT, 0, k.shadow.n);
+    });
+    gl.disable(gl.DEPTH_TEST);
+    // world -> shadow texture coordinates (bias matrix folded in)
+    var bias = new Float32Array([0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0.5, 0, 0.5, 0.5, 0.5, 1]);
+    common.uShadowMap = this.shadowMap; common.uShadowMat = mul4(bias, lightVP); common.uShadowOn = 1;
+
+    // Scene: background, terrain, plants, then the water surface.
     this._target(this.sceneFbo, w, h);
     gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
     this.progBack.use().set(common).set({ uInvViewProj: inv4(vp), uSunDisk: sunDisk });
@@ -1537,6 +1819,14 @@
     gl.bindVertexArray(this.waterMesh.vao);
     this.progTerrain.use().set(common).set({ uViewProj: vp });
     gl.drawElements(gl.TRIANGLES, this.waterMesh.count, gl.UNSIGNED_INT, 0);
+    this.progPlant.use().set(common).set(plantU).set({ uViewProj: vp });
+    [this.palms, this.trees].forEach(function (k) {
+      ["main", "far"].forEach(function (pass) {
+        if (!k[pass].n) return;
+        gl.bindVertexArray(k[pass].vao);
+        gl.drawElementsInstanced(gl.TRIANGLES, k[pass].count, gl.UNSIGNED_SHORT, 0, k[pass].n);
+      });
+    });
     this.progWater.use().set(common).set({ uViewProj: vp, uFoamStr: p.foam > 0 ? 0.6 + p.foam : 0 });
     gl.bindVertexArray(this.waterMesh.vao);
     gl.drawElements(gl.TRIANGLES, this.waterMesh.count, gl.UNSIGNED_INT, 0);

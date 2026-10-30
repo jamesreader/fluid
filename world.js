@@ -409,9 +409,13 @@
       timings: { terrain: t1 - t0, fields: t2 - t1 },
       // helpers travel with the data so the renderer needs no global
       heightAt: heightAt, terrainTexture: terrainTexture, shoreTexture: shoreTexture, shoreKTexture: shoreKTexture, setSwell: setSwell,
+      palmMesh: palmMesh, canopyMesh: canopyMesh,
     };
     setSwell(w, opts.swell == null ? 1.2 : opts.swell, opts.swellDir == null ? 35 : opts.swellDir);
     w.timings.shore = Date.now() - t2;
+    var t3 = Date.now();
+    w.plants = scatterPlants(w, opts.seed);
+    w.timings.plants = Date.now() - t3;
     return w;
   }
   function setSwell(w, swellH, swellDeg) {
@@ -453,10 +457,133 @@
     return out;
   }
 
+  // --------------------------------------------------------------- plants
+  // Where the trees grow: coconut palms crowd the beaches and motus, leaning
+  // seaward; rainforest canopy covers the hills, thinning on steep rock.
+  // Each palm: x, y, z, height, rotation, lean, phase, tint (8 floats);
+  // each canopy tree: x, y, z, radius, rotation, squash, phase, tint.
+  function scatterPlants(w, seed) {
+    var rnd = mulberry32((seed || 7) + 1234), h = w.height, palms = [], trees = [];
+    function slopeAt(x, z) {
+      var e = 2;
+      var gx = (heightAt(w, x + e, z) - heightAt(w, x - e, z)) / (2 * e), gz = (heightAt(w, x, z + e) - heightAt(w, x, z - e)) / (2 * e);
+      return Math.sqrt(gx * gx + gz * gz);
+    }
+    var nGrove = makeNoise((seed || 7) + 77);
+    for (var z = -HALF + 2; z < HALF - 2; z += 4.5) {
+      for (var x = -HALF + 2; x < HALF - 2; x += 4.5) {
+        var px = x + (rnd() - 0.5) * 4, pz = z + (rnd() - 0.5) * 4;
+        var y = heightAt(w, px, pz);
+        if (y < 0.9) continue;
+        var inland = -bilinear(w.sdf, px, pz, 0), sl = slopeAt(px, pz);
+        var grove = 0.5 + 0.5 * nGrove(px / 60, pz / 60);
+        // palms: a belt behind the beach, scattered further up
+        var pPalm = (inland > 5 && inland < 95 ? 0.5 * Math.exp(-Math.max(0, inland - 18) / 30) : 0) + (y < 30 ? 0.03 : 0);
+        pPalm *= (sl < 0.35 ? 1 : 0) * (0.35 + 0.9 * grove);
+        if (rnd() < pPalm) {
+          // lean toward the sea, more so near the beach
+          var gx = bilinear(w.sdf, px + 2, pz, 0) - bilinear(w.sdf, px - 2, pz, 0), gz = bilinear(w.sdf, px, pz + 2, 0) - bilinear(w.sdf, px, pz - 2, 0);
+          var lean = Math.atan2(gz, gx), amt = (inland < 30 ? 0.6 : 0.25) + rnd() * 0.5;
+          palms.push(px, y - 0.15, pz, 7 + rnd() * 7, lean, amt, rnd() * TAU, rnd());
+          continue;
+        }
+        // rainforest canopy (one candidate in two on this finer grid)
+        if (inland > 20 && y > 3.2 && sl < 0.85 && y < 218 && rnd() < 0.9 * (0.6 + 0.4 * grove) * (1 - smoothstep(0.6, 0.85, sl))) {
+          trees.push(px, y - 0.6, pz, 4.5 + rnd() * 4 + Math.min(y / 50, 2), rnd() * TAU, 0.5 + rnd() * 0.25, rnd() * TAU, rnd());
+        }
+      }
+    }
+    return { palms: new Float32Array(palms), trees: new Float32Array(trees) };
+  }
+
+  // Coconut palm, height 1, trunk base at the origin, curving toward +x.
+  // Vertices: position (3), normal (3), uv (2), kind (1: 0 trunk, 1 frond,
+  // 2 coconut). Fronds are V-folded strips whose leaflets the fragment
+  // shader cuts out (uv.x across -1..1, uv.y along 0..1).
+  // far = true gives a ~130-triangle stand-in for distant palms.
+  function palmMesh(seed, far) {
+    var rnd = mulberry32((seed || 7) + 4321), V = [], I = [];
+    function vert(p, n, u, v, kind) { V.push(p[0], p[1], p[2], n[0], n[1], n[2], u, v, kind); return V.length / 9 - 1; }
+    function norm(a) { var l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+    function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+    function add(a, b, k) { return [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k]; }
+    var SEG = far ? 4 : 10, SIDES = far ? 4 : 7, k, j;
+    function spine(s) { return [0.16 * s * s, s, 0]; }
+    for (k = 0; k <= SEG; k++) {
+      var s = k / SEG, c = spine(s), t = norm([0.32 * s, 1, 0]), b = [0, 0, 1], u = cross(b, t);
+      var r = 0.026 * (1 - 0.4 * s) * (1 + 0.7 * Math.exp(-s * 14));
+      for (j = 0; j <= SIDES; j++) {
+        var a = j / SIDES * TAU, off = add(add([0, 0, 0], u, Math.cos(a) * r), b, Math.sin(a) * r);
+        vert(add(c, off, 1), norm(off), j / SIDES, s * 9, 0);
+      }
+    }
+    for (k = 0; k < SEG; k++) for (j = 0; j < SIDES; j++) {
+      var i0 = k * (SIDES + 1) + j, i1 = i0 + SIDES + 1;
+      I.push(i0, i1, i0 + 1, i0 + 1, i1, i1 + 1);
+    }
+    var crown = spine(1), NF = far ? 8 : 13, STEPS = far ? 3 : 9;
+    for (var f = 0; f < NF; f++) {
+      var ang = f / NF * TAU + (rnd() - 0.5) * 0.4;
+      var pitch = 0.55 - 0.85 * ((f * 5) % NF) / NF + (rnd() - 0.5) * 0.2;   // young fronds up, old ones drooping
+      var dir = [Math.cos(ang) * Math.cos(pitch), Math.sin(pitch), Math.sin(ang) * Math.cos(pitch)];
+      var len = 0.4 + rnd() * 0.12, base = V.length / 9;
+      for (k = 0; k <= STEPS; k++) {
+        var tt = k / STEPS;
+        var q = add(add(crown, dir, len * tt), [0, -1, 0], 0.6 * len * tt * tt);
+        var tg = norm(add(dir, [0, -1, 0], 1.2 * tt));
+        var side = norm(cross(tg, [0, 1, 0])), up = norm(cross(side, tg));
+        var wdt = 0.12 * len * Math.pow(Math.sin(Math.PI * Math.min(1, 0.08 + tt * 0.95)), 0.7);
+        vert(add(add(q, side, wdt), up, -0.4 * wdt), norm(add(up, side, 0.4)), -1, tt, 1);
+        vert(q, up, 0, tt, 1);
+        vert(add(add(q, side, -wdt), up, -0.4 * wdt), norm(add(up, side, -0.4)), 1, tt, 1);
+      }
+      for (k = 0; k < STEPS; k++) {
+        var a0 = base + k * 3, a1 = a0 + 3;
+        I.push(a0, a1, a0 + 1, a0 + 1, a1, a1 + 1, a0 + 1, a1 + 1, a0 + 2, a0 + 2, a1 + 1, a1 + 2);
+      }
+    }
+    // a few coconuts under the crown
+    for (var cIdx = 0; cIdx < (far ? 0 : 4); cIdx++) {
+      var ca = cIdx * 1.7 + 0.3, cc = add(crown, [Math.cos(ca) * 0.035, -0.04 - 0.015 * (cIdx % 2), Math.sin(ca) * 0.035], 1), cr = 0.016, cb = V.length / 9;
+      var dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+      dirs.forEach(function (d) { vert(add(cc, d, cr), d, 0, 0, 2); });
+      [[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4], [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]].forEach(function (t3) { I.push(cb + t3[0], cb + t3[1], cb + t3[2]); });
+    }
+    return { vertices: new Float32Array(V), indices: new Uint16Array(I) };
+  }
+
+  // Rainforest crown: a lumpy, squashed icosphere (radius 1).
+  function canopyMesh(seed, far) {
+    var n = makeNoise((seed || 7) + 555);
+    var t = (1 + Math.sqrt(5)) / 2, P = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]];
+    var F = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+    P = P.map(function (p) { var l = Math.hypot(p[0], p[1], p[2]); return [p[0] / l, p[1] / l, p[2] / l]; });
+    for (var lvl = 0; lvl < (far ? 1 : 2); lvl++) {
+      var mid = {}, F2 = [];
+      var midpoint = function (a, b) {
+        var key = a < b ? a + "_" + b : b + "_" + a;
+        if (mid[key] != null) return mid[key];
+        var m = [(P[a][0] + P[b][0]) / 2, (P[a][1] + P[b][1]) / 2, (P[a][2] + P[b][2]) / 2], l = Math.hypot(m[0], m[1], m[2]);
+        P.push([m[0] / l, m[1] / l, m[2] / l]);
+        return (mid[key] = P.length - 1);
+      };
+      F.forEach(function (f) { var a = midpoint(f[0], f[1]), b = midpoint(f[1], f[2]), c = midpoint(f[2], f[0]); F2.push([f[0], a, c], [f[1], b, a], [f[2], c, b], [a, b, c]); });
+      F = F2;
+    }
+    var V = [], I = [];
+    P.forEach(function (p) {
+      var r = 1 + 0.22 * n(p[0] * 2.1 + 3, p[2] * 2.1 + p[1] * 1.3) + 0.08 * n(p[0] * 6, p[1] * 6 + p[2] * 3);
+      V.push(p[0] * r, p[1] * r, p[2] * r, p[0], p[1], p[2], 0, p[1], 3);
+    });
+    F.forEach(function (f) { I.push(f[0], f[1], f[2]); });
+    return { vertices: new Float32Array(V), indices: new Uint16Array(I) };
+  }
+
   return {
     N: N, SIZE: SIZE, DX: DX, HALF: HALF, OCEAN_FLOOR: OCEAN_FLOOR, SWELL_T: SWELL_T, SWASH_C: SWASH_C,
     WINDWARD: WINDWARD, GROUP: GROUP,
     build: build, setSwell: setSwell, heightAt: heightAt, bilinear: bilinear,
+    scatterPlants: scatterPlants, palmMesh: palmMesh, canopyMesh: canopyMesh,
     terrainTexture: terrainTexture, shoreTexture: shoreTexture, shoreKTexture: shoreKTexture,
     phaseSpeed: phaseSpeed, shoaling: shoaling, fastSweep: fastSweep, makeNoise: makeNoise, mulberry32: mulberry32,
   };
