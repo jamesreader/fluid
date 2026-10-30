@@ -983,10 +983,10 @@
     "void main() {",
     "  int i = int(gl_FragCoord.x);",
     "  vec2 xz = i == 0 ? uCam.xz : uProbePts[i];",
-    // height, and the surf's current (cell-centre velocity) where simulated
+    // height, and the surf's current (cell-centre velocity) and how much of it is simulated here
     "  vec4 st = sweAt(xz), stL = sweAt(xz - vec2(0.4, 0.0)), stB = sweAt(xz - vec2(0.0, 0.4));",
-    "  vec2 cur = 0.5 * vec2(st.g + stL.g, st.b + stB.b) * sweMask(xz);",
-    "  o = vec4(surfaceAt(xz), cur, 1.0);",
+    "  float sm = sweMask(xz);",
+    "  o = vec4(surfaceAt(xz), 0.5 * vec2(st.g + stL.g, st.b + stB.b) * sm, sm);",
     "}",
   ].join("\n");
 
@@ -2296,8 +2296,8 @@
     gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.probeRead);
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
     var h = this.probeHeights || (this.probeHeights = new Float32Array(64));
-    var cu = this.probeCurrents || (this.probeCurrents = new Float32Array(128));
-    for (var i = 0; i < 64; i++) { h[i] = this.probeRead[i * 4]; cu[i * 2] = this.probeRead[i * 4 + 1]; cu[i * 2 + 1] = this.probeRead[i * 4 + 2]; }
+    var cu = this.probeCurrents || (this.probeCurrents = new Float32Array(192));   // (x, z, weight) per probe
+    for (var i = 0; i < 64; i++) { h[i] = this.probeRead[i * 4]; for (var c = 0; c < 3; c++) cu[i * 3 + c] = this.probeRead[i * 4 + 1 + c]; }
   };
   // One or two wave-equation steps; the grid recentres on `centre` (world).
   Renderer.prototype._stepRipples = function (dt, centre, O, common) {
