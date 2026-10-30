@@ -221,6 +221,11 @@ function lagoonMain() {
     if (e.code === "Space" || e.code.indexOf("Arrow") === 0) e.preventDefault();
   });
   window.addEventListener("keyup", function (e) { keys[e.code] = false; });
+  // a clicked button would keep focus and swallow WASD / Space
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest && e.target.closest("button");
+    if (b) b.blur();
+  });
   window.addEventListener("blur", function () { keys = {}; });
 
   // --------------------------------------------- mouse: drag or pointer lock
@@ -276,6 +281,7 @@ function lagoonMain() {
     touches[e.pointerId] = { x: e.clientX, y: e.clientY, moved: 0 };
     try { cv.setPointerCapture(e.pointerId); } catch (err) {}
     pinch = null;
+    if (touchList().length > 1) touchList().forEach(function (q) { q.moved = Infinity; });   // a gesture, not a tap
     if (tool === "touch" && touchList().length === 1) handStart(e.clientX, e.clientY);
   });
   cv.addEventListener("pointermove", function (e) {
@@ -412,7 +418,11 @@ function lagoonMain() {
   sndBtn.addEventListener("click", toggleSound);
   // remembered "on": starts with the first click or key (browsers need a gesture)
   if (saved.sound) {
-    var wake = function () { if (!snd.on) { snd.start(); sndBtn.classList.add("on"); } window.removeEventListener("pointerdown", wake, true); window.removeEventListener("keydown", wake, true); };
+    var wake = function (e) {
+      if (e.target === sndBtn || (e.key && e.key.toLowerCase() === "m")) return;   // that gesture toggles it itself
+      if (!snd.on) { snd.start(); sndBtn.classList.add("on"); }
+      window.removeEventListener("pointerdown", wake, true); window.removeEventListener("keydown", wake, true);
+    };
     window.addEventListener("pointerdown", wake, true); window.addEventListener("keydown", wake, true);
   }
   // How loud the surf is here: breaking water near the camera, and how much
@@ -426,7 +436,7 @@ function lagoonMain() {
       var st = w.bilinear(w.stage, x, z, 0);
       if (st < 0.9) continue;
       var A = w.bilinear(w.arrival, x, z, 0), th = ((om * (t - A)) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
-      var H = w.bilinear(w.waveH, x, z, 0) * params.surf * (0.72 + 0.28 * Math.cos(og * (t - A)));
+      var H = w.bilinear(w.waveH, x, z, 0) * (0.72 + 0.28 * Math.cos(og * (t - A)));
       var d = Math.hypot(r, h), wgt = H * 40 / (40 + d * d / 30) * r / 60;
       roar += wgt * (st > 1.05 ? 1 : 0.3);
       if (st < 1.45 && th > -0.05 && th < 0.35) crash += wgt * 2;
@@ -542,6 +552,7 @@ function lagoonMain() {
   btnRow.querySelector("#ui-reset").addEventListener("click", function () {
     params = Object.assign({}, defaults);
     renderer.setParams(params);
+    renderer.rebuildShore();
     cam.speed = 4; cam.fov = 62 * Math.PI / 180; cruise = false;
     syncUI(); store();
   });

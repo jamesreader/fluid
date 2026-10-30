@@ -81,8 +81,8 @@
   Playground.prototype.probePoints = function () {
     var pts = [], i;
     for (i = 0; i < MAX_PROBES; i++) pts.push([0, 0]);
-    this.objects.forEach(function (o, k) {
-      var s = OBJ_SLOT + 3 * k;
+    this.objects.forEach(function (o) {
+      var s = OBJ_SLOT + 3 * o.slot;
       pts[s] = [o.pos[0], o.pos[2]]; pts[s + 1] = [o.pos[0] + 0.5, o.pos[2]]; pts[s + 2] = [o.pos[0], o.pos[2] + 0.5];
     });
     var b = this.boat;
@@ -98,11 +98,13 @@
     for (var i = 0; i < MAX_PROBES; i++) this.probeH[i] = heights[i];
     this.probeOK = true;
   };
-  // Water height and slope from an object's three probes; before the first
-  // readback, a flat sea.
-  Playground.prototype._water = function (k) {
-    if (!this.probeOK) return { h: 0, sx: 0, sz: 0 };
-    var s = OBJ_SLOT + 3 * k, h = this.probeH[s];
+  // Water height and slope from an object's three probes. Each object keeps
+  // its probe slot for life; readings arrive a few frames late, so a new
+  // object assumes a flat sea until its own measurements come back.
+  var PROBE_LAG = 6;
+  Playground.prototype._water = function (o) {
+    if (!this.probeOK || o.age < PROBE_LAG) return { h: 0, sx: 0, sz: 0 };
+    var s = OBJ_SLOT + 3 * o.slot, h = this.probeH[s];
     return { h: h, sx: (this.probeH[s + 1] - h) / 0.5, sz: (this.probeH[s + 2] - h) / 0.5 };
   };
 
@@ -110,17 +112,21 @@
   Playground.prototype.throwObject = function (kind, pos, vel) {
     var K = KINDS[kind];
     if (this.objects.length >= MAX_OBJ) this.objects.shift();
+    var used = {}, slot = 0;
+    this.objects.forEach(function (o) { used[o.slot] = true; });
+    while (used[slot]) slot++;
     var a = this.rnd() * TAU;
     this.objects.push({
-      kind: kind, K: K, pos: pos.slice(), vel: vel.slice(), q: quatAxis(0, 1, 0, a),
+      kind: kind, K: K, slot: slot, age: 0, pos: pos.slice(), vel: vel.slice(), q: quatAxis(0, 1, 0, a),
       w: [(this.rnd() - 0.5) * 8, (this.rnd() - 0.5) * 8, (this.rnd() - 0.5) * 8], wet: 0, seed: this.rnd(),
     });
   };
   Playground.prototype._updateObjects = function (dt) {
     var self = this;
     // probes follow the objects, so an object's slot shifts when an older one goes
-    this.objects.forEach(function (o, k) {
-      var K = o.K, r = K.r, wat = self._water(k);
+    this.objects.forEach(function (o) {
+      o.age++;
+      var K = o.K, r = K.r, wat = self._water(o);
       var g = self.ground(o.pos[0], o.pos[2]);
       var waterH = Math.max(wat.h, g - 2);   // over dry land the probe means nothing
       var f = g > 0.3 ? 0 : capFraction(waterH - (o.pos[1] - r), r);
@@ -253,7 +259,7 @@
       if (st < 0.92 || st > 1.5) continue;
       var A = w.bilinear(w.arrival, x, z, 0), th = wrapPi(om * (time - A));
       if (th < -0.1 || th > 0.06) continue;
-      var H = w.bilinear(w.waveH, x, z, 0) * surf * (0.72 + 0.28 * Math.cos(og * (time - A)));
+      var H = w.bilinear(w.waveH, x, z, 0) * (0.72 + 0.28 * Math.cos(og * (time - A)));   // waveH is already sized for the surf
       if (H < 0.3) continue;
       var nx = w.bilinear(w.dirX, x, z, 0), nz = w.bilinear(w.dirZ, x, z, 0), nl = Math.hypot(nx, nz) || 1;
       nx /= nl; nz /= nl;
@@ -283,6 +289,7 @@
     var hMean = (hBow + hStern) / 2;
     var speedF = b.vel[0] * c + b.vel[2] * s, speedS = b.vel[0] * side[0] + b.vel[2] * side[1];
     var draft = 0.28, d = hMean - b.pos[1] + draft, wet = clamp(d / draft, 0, 1);
+    var airborne = b.air;                              // time in the air before this step
     b.air = wet <= 0 ? b.air + dt : 0;
     // heave: buoyancy spring toward floating at the water line, plus planing lift
     var lift = Math.min(speedF * speedF * 0.004, 0.25);
@@ -352,7 +359,7 @@
       }
     }
     // landing after a jump
-    if (b.air === 0 && b.vel[1] < -2.5 && wet > 0) { this.splash(b.pos[0], hMean, b.pos[2], 1.0, -b.vel[1]); }
+    if (airborne > 0.15 && wet > 0 && b.vel[1] < -1.5) this.splash(b.pos[0], hMean, b.pos[2], 1.0, -b.vel[1]);
     void self;
   };
   // Quaternion: yaw (about y, heading hdg toward +z for positive), pitch (bow up), roll.

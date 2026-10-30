@@ -217,6 +217,13 @@ console.log("--- (g) floating things and the boat ---");
   console.log("    beach ball drift after 9 s of 0.8 m swell: " + drift.toFixed(2) + " m");
   if (drift > 0.3) pass("(g) the swell carries a floating ball along with it");
   else fail("(g) ball did not drift with the waves (" + drift.toFixed(2) + " m)");
+  // probe slots belong to objects for life: the 17th throw must not shuffle them
+  var pq = new Play.Playground(w);
+  for (var q = 0; q < Play.MAX_OBJ + 1; q++) pq.throwObject(1, [q * 10, 1, 0], [0, 0, 0]);
+  var qp = pq.probePoints(), slots = pq.objects.map(function (o) { return o.slot; });
+  var own = pq.objects.every(function (o) { var p0 = qp[1 + 3 * o.slot]; return p0[0] === o.pos[0] && p0[1] === o.pos[2]; });
+  if (own && new Set(slots).size === slots.length) pass("(g) each object keeps its own water probe when the oldest is replaced");
+  else fail("(g) probe slots shuffled: " + slots.join(","));
   // boat: planes up to speed, turns, stays finite, throws spray and wake
   var b = pg.spawnBoat(280, 300, 0), maxV = 0, finite = true, drops = 0, spray = 0;
   b.throttle = 1;

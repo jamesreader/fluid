@@ -385,7 +385,7 @@
   var C_ATMOS = [
     "uniform sampler2D uAtmo;",
     "vec3 atmosphere(vec3 d) {",
-    "  vec2 uv = vec2(atan(d.z, d.x) / TAU + 0.5, sqrt(max(d.y, 0.0)));",
+    "  vec2 uv = vec2((abs(d.x) + abs(d.z) > 1e-6 ? atan(d.z, d.x) : 0.0) / TAU + 0.5, sqrt(max(d.y, 0.0)));",
     "  return textureLod(uAtmo, uv, 0.0).rgb;",
     "}",
   ].join("\n");
@@ -462,7 +462,8 @@
 
   var C_ENV = [
     "uniform sampler2D uEnv;",     // equirect sky (no sun disk), mipmapped
-    "vec2 dirToEquirect(vec3 d) { return vec2(atan(d.z, d.x) / TAU + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI); }",
+    // atan(0, 0) is undefined (NaN on some GPUs): straight up/down gets any longitude
+    "vec2 dirToEquirect(vec3 d) { return vec2((abs(d.x) + abs(d.z) > 1e-6 ? atan(d.z, d.x) : 0.0) / TAU + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI); }",
     "vec3 envLod(vec3 d, float lod) { return textureLod(uEnv, dirToEquirect(d), lod).rgb; }",
     "vec3 skyIrradiance() { return PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb; }",
   ].join("\n");
@@ -584,7 +585,7 @@
     "  }",
     // absorbing border, gentle loss everywhere
     "  vec2 e = min(vec2(p), vec2(n) - 1.0 - vec2(p)) / float(n.x);",
-    "  float border = smoothstep(0.07, 0.0, min(e.x, e.y));",
+    "  float border = (1.0 - smoothstep(0.0, 0.07, min(e.x, e.y)));",
     "  v *= exp(-uDt * (0.35 + 9.0 * border));",
     "  h *= exp(-uDt * (0.04 + 9.0 * border));",
     "  h += v * uDt;",
@@ -729,7 +730,7 @@
     "vec3 sandAlbedo(vec2 w, float tone) {",
     "  vec3 alb = vec3(0.93, 0.90, 0.82) * (0.9 + 0.1 * tone);",
     "  alb *= 0.93 + 0.07 * vnoise(w * 4.0) + 0.05 * (vnoise(w * 16.0) - 0.5);",
-    "  float grass = smoothstep(-0.52, -0.62, tone) * smoothstep(0.35, 0.75, vnoise(w * 2.0 + 11.0));",
+    "  float grass = (1.0 - smoothstep(-0.62, -0.52, tone)) * smoothstep(0.35, 0.75, vnoise(w * 2.0 + 11.0));",
     "  return mix(alb, vec3(0.16, 0.20, 0.09), grass * 0.85);",
     "}",
     // Ground albedo from the world data: beach sand (darker where wet), jungle
@@ -1058,7 +1059,7 @@
     "void main() {",
     "  vec4 wd = worldAt(aPos, clamp(log2(aCell / 2.0), 0.0, 8.0));",
     "  float h = wd.x;",
-    "  h += coralLump(aPos, wd.y, distance(aPos, uCam.xz)) * smoothstep(-0.2, -0.8, h);",   // fades in with depth: no step at the edge
+    "  h += coralLump(aPos, wd.y, distance(aPos, uCam.xz)) * (1.0 - smoothstep(-0.8, -0.2, h));",   // fades in with depth: no step at the edge
     "  vPos = vec3(aPos.x, h, aPos.y);",
     "  gl_Position = uViewProj * vec4(vPos, 1.0);",
     "}",
@@ -1074,7 +1075,7 @@
     "  vec3 V = toEye / dist;",
     "  bool under = uCam.y < texelFetch(uProbe, ivec2(0), 0).x;",
     // seen from above, anything a metre under water is covered by the surface
-    "  if (!under && P.y < -1.0) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }",
+    "  if (!under && P.y < -1.0) { o = vec4(0.0); return; }",   // alpha 0: not an object for the water to look through
     "  float lod = clamp(log2(1.0 + dist / 60.0), 0.0, 6.0);",
     "  vec4 wd = worldAt(P.xz, 0.0);",
     "  vec2 w = P.xz + uOffD;",
@@ -1082,7 +1083,7 @@
     "  float lump = 0.0;",
     "  if (wd.x < -0.2 && wd.y > 0.05) {",          // coral rock relief, shaded from the same function
     "    float dr = distance(P.xz, uCam.xz), e = 0.12 + dr * 0.01;",
-    "    float dw = smoothstep(-0.2, -0.8, wd.x);",
+    "    float dw = (1.0 - smoothstep(-0.8, -0.2, wd.x));",
     "    lump = coralLump(P.xz, wd.y, dr) * dw;",
     "    float lx = (coralLump(P.xz + vec2(e, 0.0), wd.y, dr) - coralLump(P.xz - vec2(e, 0.0), wd.y, dr)) * dw;",
     "    float lz = (coralLump(P.xz + vec2(0.0, e), wd.y, dr) - coralLump(P.xz - vec2(0.0, e), wd.y, dr)) * dw;",
@@ -1094,7 +1095,7 @@
     // sand the swash just ran over stays dark and glossy for a few seconds
     "  Surf sw = shoreWave(P.xz, 0.0);",
     "  if (wd.x > 0.0 && sw.H > 0.0) {",
-    "    float zone = smoothstep(0.12, -0.04, wd.x - 0.55 * sw.H);",
+    "    float zone = (1.0 - smoothstep(-0.04, 0.12, wd.x - 0.55 * sw.H));",
     "    float fresh = sw.th > 0.0 ? exp(-sw.th * 0.6) : exp(sw.th * 2.0);",
     "    float wet2 = zone * (0.6 + 0.4 * fresh);",
     "    alb *= mix(1.0, 0.62, max(wet2 - wet, 0.0));",
@@ -1172,8 +1173,8 @@
     "  return mix(col, atmosphere(normalize(vec3(dir.x, max(dir.y, 0.02), dir.z))), f);",
     "}",
     "void main() {",
-    "  bool frond = vKind > 0.5 && vKind < 1.5;",
-    "  if (frond && leafGap(vUV)) discard;",
+    "  bool frond = vKind > 0.5 && vKind < 1.5, gap = leafGap(vUV);",   // derivatives in uniform flow
+    "  if (frond && gap) discard;",
     "  vec3 n = normalize(vN);",
     "  if (frond && dot(n, uCam - vPos) < 0.0) n = -n;",   // fronds are two-sided; solids keep their outward normals
     "  vec3 P = vPos, toEye = uCam - P;",
@@ -1219,7 +1220,8 @@
     "in float vKind, vTint, vVis, vH;",
     "out vec4 o;",
     "void main() {",
-    "  if (vKind > 0.5 && vKind < 1.5 && leafGap(vUV)) discard;",
+    "  bool gap = leafGap(vUV);",
+    "  if (vKind > 0.5 && vKind < 1.5 && gap) discard;",
     "  o = vec4(1.0);",
     "}",
   ].join("\n");
@@ -1258,7 +1260,7 @@
     "    else p.z += sin(uTime * 2.0 + p.x * 3.0) * 0.06 * (-p.x);",
     "  }",
     "  float s = aInst0.w;",
-    "  if (uGrowR > 0.0) s *= smoothstep(uGrowR, uGrowR * 0.72, distance(aInst0.xz, uCam.xz));",   // grow in as you approach
+    "  if (uGrowR > 0.0) s *= 1.0 - smoothstep(uGrowR * 0.72, uGrowR, distance(aInst0.xz, uCam.xz));",   // grow in as you approach
     "  vPos = aInst0.xyz + qrot(aInst1, p * s);",
     "  vN = qrot(aInst1, n); vLocal = p; vUV = aUV; vPart = aKind; vParams = aInst2;",
     "  gl_Position = uViewProj * vec4(vPos, 1.0);",
@@ -1296,9 +1298,9 @@
     "    alb *= 0.75 + 0.4 * vnoise(lp.xz * 9.0) * (vPart > 1.5 ? 0.5 : 1.0);",
     "    if (vPart > 1.5) { alb *= 0.85; n = normalize(n + vec3(0.0, 0.9, 0.0)); }",   // underside: lit by light bounced off the sand
     "  } else if (k == 3) {",                          // sea fan: an open lattice
-    "    float u = vUV.x * 10.0, v = vUV.y * 13.0;",
+    "    float u = vUV.x * 10.0, v = vUV.y * 13.0, fwu = fwidth(u);",
     "    float gx = abs(fract(u + v * 0.35 + 0.15 * sin(v * 2.0)) - 0.5), gy = abs(fract(v + u * 0.2) - 0.5);",
-    "    if (min(gx, gy) > 0.14 && abs(vUV.x) > 0.04 && fwidth(u) < 0.45) discard;",
+    "    if (min(gx, gy) > 0.14 && abs(vUV.x) > 0.04 && fwu < 0.45) discard;",
     "    alb = pick3(seed, vec3(0.50, 0.10, 0.36), vec3(0.62, 0.48, 0.10), vec3(0.55, 0.16, 0.14));",
     "  } else if (k == 4) {",                          // soft coral / tube sponges
     "    alb = pick3(seed, vec3(0.78, 0.36, 0.10), vec3(0.80, 0.66, 0.16), vec3(0.66, 0.30, 0.46));",
@@ -1309,7 +1311,7 @@
     "    alb *= 0.7 + 0.45 * vnoise(lp.xz * 14.0 + lp.y * 7.0);",
     "  } else if (k == 10) {",                         // reef fish by species
     "    int sp = int(vParams.y + 0.5);",
-    "    float t = vUV.x, top = cos(vUV.y * TAU), belly = smoothstep(0.2, -0.6, top);",
+    "    float t = vUV.x, top = cos(vUV.y * TAU), belly = (1.0 - smoothstep(-0.6, 0.2, top));",
     "    if (sp == 0) alb = vec3(0.95, 0.76, 0.06);",
     "    else if (sp == 1) alb = mix(vec3(0.05, 0.32, 0.68), vec3(0.45, 0.72, 0.85), belly);",
     "    else if (sp == 2) {",
@@ -1330,7 +1332,7 @@
     "      alb = mix(vec3(0.26, 0.20, 0.10), vec3(0.50, 0.40, 0.20), smoothstep(0.3, 0.7, sc));",
     "      alb *= 0.75 + 0.35 * smoothstep(0.15, 0.4, abs(fract(sc * 3.0) - 0.5));",   // dark seams between scutes
     "    } else {",
-    "      alb = mix(vec3(0.40, 0.40, 0.28), vec3(0.70, 0.64, 0.44), smoothstep(-0.2, -0.8, n.y));",
+    "      alb = mix(vec3(0.40, 0.40, 0.28), vec3(0.70, 0.64, 0.44), (1.0 - smoothstep(-0.8, -0.2, n.y)));",
     "      alb *= 0.75 + 0.4 * vnoise(vLocal.xz * 30.0);",
     "      if (dot(n, toEye) < 0.0) n = -n;",
     "    }",
@@ -1415,7 +1417,7 @@
     "out vec4 o;",
     "void main() {",
     "  float d = length(vQ);",
-    "  float a = smoothstep(1.0, 0.25, d) * vA * 0.7;",
+    "  float a = (1.0 - smoothstep(0.25, 1.0, d)) * vA * 0.7;",
     "  if (a < 0.004) discard;",
     "  vec3 sky = PI * textureLod(uEnv, vec2(0.5, 0.25), 7.0).rgb;",
     "  vec3 col = (uSunCol * 0.95 + sky) / PI * 0.9;",
@@ -1859,12 +1861,11 @@
     }
     var P = k[pass];
     P.n = n;
-    gl.bindBuffer(gl.ARRAY_BUFFER, P.buf);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, out, 0, n * 9);
+    // (a zero count would mean "to the end of the array" in WebGL2)
+    if (n) { gl.bindBuffer(gl.ARRAY_BUFFER, P.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, out, 0, n * 9); }
     if (farFrom) {
       k.far.n = nf;
-      gl.bindBuffer(gl.ARRAY_BUFFER, k.far.buf);
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, outF, 0, nf * 9);
+      if (nf) { gl.bindBuffer(gl.ARRAY_BUFFER, k.far.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, outF, 0, nf * 9); }
     }
   };
 
@@ -2033,8 +2034,7 @@
       }
     }
     kinds.forEach(function (k) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, k.buf);
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12);
+      if (k.n) { gl.bindBuffer(gl.ARRAY_BUFFER, k.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12); }
     });
   };
 
@@ -2050,18 +2050,19 @@
         else { idx[k++] = a; idx[k++] = c; idx[k++] = b; idx[k++] = b; idx[k++] = c; idx[k++] = d; }
       }
     }
-    var ib = gl.createBuffer();
+    var ib = gl.createBuffer(), bufs = [ib];
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
     attribs.forEach(function (at) {
       var vb = gl.createBuffer();
+      bufs.push(vb);
       gl.bindBuffer(gl.ARRAY_BUFFER, vb);
       gl.bufferData(gl.ARRAY_BUFFER, at.data, gl.STATIC_DRAW);
       gl.enableVertexAttribArray(at.loc);
       gl.vertexAttribPointer(at.loc, at.size, gl.FLOAT, false, 0, 0);
     });
     gl.bindVertexArray(null);
-    return { vao: vao, count: idx.length };
+    return { vao: vao, count: idx.length, buffers: bufs };
   };
   Renderer.prototype._buildCausticMesh = function (n) {
     var pos = new Float32Array(n * n * 2);
@@ -2073,7 +2074,11 @@
   // Camera-centred grid out to R metres; x = sign(u) R (e^{a|u|} - 1)/(e^a - 1)
   // with `a` solved so the centre cells are cell0 wide.
   Renderer.prototype._buildWaterMesh = function (n) {
-    if (this.waterMesh) { this.gl.deleteVertexArray(this.waterMesh.vao); }
+    if (this.waterMesh) {
+      var gl0 = this.gl;
+      gl0.deleteVertexArray(this.waterMesh.vao);
+      this.waterMesh.buffers.forEach(function (b) { gl0.deleteBuffer(b); });
+    }
     var R = 12000, cell0 = 0.08 * 384 / n, du = 2 / (n - 1);
     var lo = 0.1, hi = 30;
     for (var it = 0; it < 80; it++) {
@@ -2349,7 +2354,7 @@
       fauna[0].n = this.life.writeFish(fauna[0].inst, O, fauna[0].max);
       fauna[1].n = this.life.writeTurtles(fauna[1].inst, O);
       fauna[2].n = this.life.writeRays(fauna[2].inst, O);
-      fauna.forEach(function (k) { gl.bindBuffer(gl.ARRAY_BUFFER, k.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12); });
+      fauna.forEach(function (k) { if (k.n) { gl.bindBuffer(gl.ARRAY_BUFFER, k.buf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, k.inst, 0, k.n * 12); } });
     } else fauna.forEach(function (k) { k.n = 0; });
     var dyn = [], dynamic = this.dynamic;
     Object.keys(dynamic).forEach(function (name) {
