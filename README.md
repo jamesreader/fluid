@@ -104,6 +104,11 @@ turtles that surface to breathe, and spotted eagle rays over the sand.
 - **boat**: `W`/`S` throttle, `A`/`D` steer, drag to look around, `R` for a
   new boat. Planing, pitch and roll that follow the water, leans into turns,
   surfs waves, jumps crests, grounds on sand, leaves a wake and throws spray.
+- **float**: you become a swimmer's head on the water, eyes ~35 cm up on a
+  soft buoyancy spring, so you rise and fall a beat behind the swell and a
+  bore that climbs faster than you can float dunks you. Wave faces push you
+  along, `WASD` paddles, the view sways with the water, and `R` takes you
+  back out past the break.
 
 Spray flies off splashes, the bow and the lips of breaking waves. `sound`
 (or `M`) turns on a synthesised soundscape: surf roar and crashing lips near
@@ -131,23 +136,23 @@ adds:
   wet/dry fronts and bottom friction. Offshore (deeper than ~3 m) it is
   nudged toward the analytic swell; inside that line the water is free to
   shoal, steepen, break into bores, run up the sand and wash back. Floating
-  things and the boat are carried by its currents.
+  things and the boat are carried by its currents. What you see is a
+  hybrid: until a wave has broken it keeps the analytic shape, folded lip
+  and all; the whitewater, swash and backwash after that are simulated.
+  From high up the patch fades out and pauses.
 - **A peeling reef break**: a coral ledge on the windward reef, set at an
   angle to the swell so waves break along it at ~10 m/s instead of all at
   once.
-- **Curling lips**: where a front breaks hard, GPU particles (state in float
+- **Curling lips**: where a front's crest stands high for the depth under
+  it (the simulation's own breaker test), GPU particles (state in float
   textures) are thrown forward off the crest at the wave's speed, fly over
   the face and shatter into spray. They are drawn as a liquid surface in
   screen space: sphere depths, a bilateral blur, normals from the smoothed
   depth, then refraction, reflection, sunlight through the thin lip and foam
   as it aerates. The panel's `lip throw` sets how readily they form;
   `simulate the surf` switches back to the analytic waves.
-- **Float** (tool `5`): you become a swimmer's head on the water. A soft
-  buoyancy spring keeps your eyes ~35 cm above the surface, so you rise and
-  fall with the swell a beat behind it and whitewater that climbs faster
-  than you can float dunks you. Wave faces push you along, surf currents
-  carry you, `WASD` paddles, the view sways with the water, and `R` takes
-  you back out past the break.
+- **Float** (tool `5`, also in v1): here the surf currents carry you too,
+  shoreward in the whitewater and back out with the backwash.
 - **Night** (`N`, or the `night` slider): the moon takes the sun's place,
   with stars, the Milky Way, a moonlit glitter path and night-adapted colour,
   and crickets sing from the island.

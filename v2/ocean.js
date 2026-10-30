@@ -551,12 +551,12 @@
   var C_SWE = [
     "uniform sampler2D uSwe;",
     "uniform vec2 uSweC;",          // O-relative centre of the grid
-    "uniform float uSweSize, uSweOn;",
+    "uniform float uSweSize, uSweOn, uSweFade;",   // fade: 1, falling to 0 as the camera climbs away
     "vec2 sweUV(vec2 p) { return (p - uSweC) / uSweSize + 0.5; }",
     "float sweMask(vec2 p) {",
     "  if (uSweOn < 0.5) return 0.0;",
     "  vec2 uv = sweUV(p), e = min(uv, 1.0 - uv);",
-    "  return smoothstep(0.03, 0.09, min(e.x, e.y));",
+    "  return smoothstep(0.03, 0.09, min(e.x, e.y)) * uSweFade;",
     "}",
     // manual bilinear (float textures need not be filterable); t in texels, texel i at i
     "vec4 texBilin(sampler2D tex, vec2 t) {",
@@ -567,6 +567,10 @@
     "  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);",
     "}",
     "vec4 sweAt(vec2 p) { return texBilin(uSwe, sweUV(p) * vec2(textureSize(uSwe, 0)) - 0.5); }",
+    // What the simulation draws: until the analytic wave has broken (stage
+    // < ~1.5) its own shape stands, folded lip and all; the bores, swash and
+    // backwash after that are the simulation's.
+    "float sweShow(vec2 p, float stage) { return sweMask(p) * smoothstep(1.4, 1.65, stage); }",
     // the rendered surface: depth over the bed; a vanishing film tucks under the sand
     "float sweEta(float h, float bed) { return bed + h - 0.04 * (1.0 - smoothstep(0.0, 0.06, h)); }",
   ].join("\n");
@@ -678,14 +682,15 @@
     "  vec4 ap = texelFetch(uAuxIn, clamp(p + uAuxShift, ivec2(0), n - 1), 0);",
     "  float wet = ap.a * exp(-uDt / 6.0);",
     "  if (h > DRY && b0 > -0.2) wet = 1.0;",
-    // lip launch: a steep front standing well above still water, moving
-    // shoreward, in the plunging band of the analytic surf, stronger where
-    // the bed rises steeply under it (plunging rather than spilling)
-    "  vec4 sh = textureLod(uShore, worldUV(pos), 0.0);",
+    // lip launch: a steep front moving shoreward whose crest stands high for
+    // the depth under it (the simulation's own breaker test: the analytic
+    // surf has usually called this water broken already), in water at least
+    // waist deep, stronger where the bed rises under it (plunging rather
+    // than spilling)
     "  vec2 sn = normalize(textureLod(uShoreK, worldUV(pos), 0.0).xy + 1e-6);",
     "  float bedRise = dot(vec2(bR - bL, bT - bB) / (2.0 * uCell), vn);",
-    "  float band = smoothstep(0.75, 0.92, sh.w) * (1.0 - smoothstep(1.3, 1.55, sh.w));",
-    "  float lip = smoothstep(0.7, 1.5, steep) * smoothstep(0.3, 0.75, e0) * band * step(0.0, dot(vn, sn)) * (0.35 + 0.65 * smoothstep(0.03, 0.25, bedRise));",
+    "  float lip = smoothstep(0.6, 1.3, steep) * smoothstep(0.3, 0.7, e0) * smoothstep(0.35, 0.6, e0 / max(-b0, 0.05))",
+    "            * smoothstep(0.25, 0.5, h) * step(0.0, dot(vn, sn)) * (0.5 + 0.5 * smoothstep(0.0, 0.2, bedRise));",
     "  oS = vec4(h, u, w, foam);",
     "  oA = vec4(lip, vn, wet);",
     "}",
@@ -980,10 +985,12 @@
     "  vec2 p = xz;",
     "  for (int i = 0; i < 4; i++) {",
     "    vec3 f = depthFade(-worldAt(p, 0.0).x);",
-    "    p = xz - oceanDispF(p, vec3(0.0), f).xz - shoreWave(p, 0.0).d.xz * (1.0 - sweMask(p));",
+    "    Surf q = shoreWave(p, 0.0);",
+    "    p = xz - oceanDispF(p, vec3(0.0), f).xz - q.d.xz * (1.0 - sweShow(p, q.s));",
     "  }",
-    "  float sm = sweMask(p), bed = worldAt(p, 0.0).x;",
-    "  float shore = mix(shoreWave(p, 0.0).d.y, bed + sweAt(p).r, sm);",
+    "  Surf q = shoreWave(p, 0.0);",
+    "  float sm = sweShow(p, q.s), bed = worldAt(p, 0.0).x;",
+    "  float shore = mix(q.d.y, bed + sweAt(p).r, sm);",
     "  return oceanDispF(p, vec3(0.0), depthFade(-bed)).y + shore + ripple(p).r;",
     "}",
     "void main() {",
@@ -1124,9 +1131,10 @@
     "  float wl = clamp(log2(aCell / 2.0), 0.0, 8.0);",
     "  float depth = -worldAt(aPos, wl).x;",
     "  vec4 d = oceanDispF(aPos, lod, depthFade(depth));",
-    "  vec3 sd = shoreWave(aPos, wl).d;",
-    // inside the surf simulation its water replaces the analytic swell
-    "  float sm = sweMask(aPos);",
+    "  Surf sw0 = shoreWave(aPos, wl);",
+    "  vec3 sd = sw0.d;",
+    // inside the surf simulation its water replaces the broken analytic swell
+    "  float sm = sweShow(aPos, sw0.s);",
     "  if (sm > 0.0) sd = mix(sd, vec3(0.0, sweEta(sweAt(aPos).r, worldAt(aPos, 0.0).x), 0.0), sm);",
     "  d.xyz += sd;",
     "  d.y += ripple(aPos).r * (1.0 - smoothstep(0.3, 0.8, aCell));",
@@ -1157,7 +1165,7 @@
     "  Surf sw = shoreWave(vXZ, 0.0);",
     // inside the surf simulation: its slopes, foam and (for the milky surf
     // zone) its fronts stand in for the analytic swell's
-    "  float sm = sweMask(vXZ), sweFoam = 0.0;",
+    "  float sm = sweShow(vXZ, sw.s), sweFoam = 0.0;",
     "  if (sm > 0.0) {",
     "    float ec = 0.4, b0 = wd.x;",
     "    float eX = sweEta(sweAt(vXZ + vec2(ec, 0.0)).r, worldAt(vXZ + vec2(ec, 0.0), 0.0).x) - sweEta(sweAt(vXZ - vec2(ec, 0.0)).r, worldAt(vXZ - vec2(ec, 0.0), 0.0).x);",
@@ -1697,11 +1705,11 @@
     "  if (uSweOn < 0.5 || uLipRate <= 0.0) return;",
     "  ivec2 n = textureSize(uSweAux, 0);",
     "  float cell = uSweSize / float(n.x);",
-    "  for (int i = 0; i < 6; i++) {",
+    "  for (int i = 0; i < 10; i++) {",
     "    vec2 cu = vec2(rnd(seed), rnd(seed));",
     "    ivec2 c = ivec2(cu * vec2(n));",
     "    vec4 ax = texelFetch(uSweAux, c, 0);",
-    // every dead slot tries a few cells, so each cell gets ~1.5 tries a
+    // every dead slot tries a few cells, so each cell gets ~2.5 tries a
     // frame: accept in proportion to how hard it breaks and to the frame time
     "    if (ax.r * uLipRate * 120.0 * uDt <= rnd(seed)) continue;",
     "    vec2 dir = normalize(ax.gb + 1e-5);",
@@ -2389,14 +2397,24 @@
   // advect / depth / velocity (CFL-limited).
   Renderer.prototype._stepSurf = function (dt, centre, O, common) {
     var gl = this.gl, N = this.SWE_N, cell = this.SWE_CELL;
+    // From high up the 200 m patch is a small square in a wide view, and
+    // its edge against the analytic waves would show: fade it out with
+    // height, stop simulating, and start fresh from the swell on the way down.
+    var fade = Math.max(0, Math.min(1, (90 - centre[1]) / 45));
+    common.uSweFade = fade * fade * (3 - 2 * fade);
+    if (!this.p.surfSim || fade <= 0) {
+      this.sweCtr = null;
+      common.uSweOn = 0; common.uSwe = this.sweS[this.sweCur]; common.uSweAux = this.sweA[this.sweAux];
+      common.uSweC = [0, 0]; common.uSweSize = N * cell;
+      return;
+    }
     var c = [Math.round(centre[0] / cell), Math.round(centre[2] / cell)];
     var shift = [0, 0], first = !this.sweCtr;
     if (this.sweCtr) shift = [c[0] - this.sweCtr[0], c[1] - this.sweCtr[1]];
     if (first || Math.abs(shift[0]) > N / 2 || Math.abs(shift[1]) > N / 2) shift = [N, N];   // start from the swell
     this.sweCtr = c;
     var ctr = [c[0] * cell - O[0], c[1] * cell - O[1]];
-    common.uSweC = ctr; common.uSweSize = N * cell; common.uSweOn = this.p.surfSim ? 1 : 0;
-    if (!this.p.surfSim) { common.uSwe = this.sweS[this.sweCur]; common.uSweAux = this.sweA[this.sweAux]; return; }
+    common.uSweC = ctr; common.uSweSize = N * cell; common.uSweOn = 1;
     // gravity waves cross a cell in ~0.024 s in 30 m of water: never step
     // longer than half that (on a slow frame the surf runs slow instead)
     var steps = Math.max(1, Math.min(6, Math.ceil(dt / 0.012))), h = Math.min(dt / steps, 0.012);

@@ -1407,7 +1407,7 @@
     "  vec3 along = vl > 1e-3 ? vs / vl : uCamUp, across = normalize(cross(along, normalize(uCam - P)));",
     "  float stretch = 1.0 + min(vl * 0.08, 2.5);",
     "  P += across * q.x * aInst0.w + along * q.y * aInst0.w * stretch;",
-    "  vQ = q; vA = aInst1.w;",
+    "  vQ = q; vA = aInst1.w * smoothstep(0.4, 1.6, distance(uCam, P));",   // drops at the lens would fill the view
     "  gl_Position = uViewProj * vec4(P, 1.0);",
     "}",
   ].join("\n");
@@ -1550,8 +1550,8 @@
     });
     return P;
   }
-  function lookDir(eye, fwd) {   // view matrix from eye + forward (y up)
-    var f = norm3(fwd), s = norm3(cross3(f, [0, 1, 0])), u = cross3(s, f);
+  function lookDir(eye, fwd, up) {   // view matrix from eye + forward (up: y unless given, e.g. rolling on a swell)
+    var f = norm3(fwd), s = norm3(cross3(f, up || [0, 1, 0])), u = cross3(s, f);
     return new Float32Array([s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0,
       -dot3(s, eye), -dot3(u, eye), dot3(f, eye), 1]);
   }
@@ -2212,8 +2212,9 @@
     var cam = [camera.pos[0] - O[0], camera.pos[1], camera.pos[2] - O[1]];
     // near plane at 25 cm keeps the depth buffer fine enough to separate
     // water from beach a kilometre away
-    var proj = perspective(camera.fov, w / h, 0.25, 30000);
-    var view = lookDir(cam, camera.fwd);
+    // (a camera floating at the waterline asks for a closer one: camera.near)
+    var proj = perspective(camera.fov, w / h, camera.near || 0.25, 30000);
+    var view = lookDir(cam, camera.fwd, camera.up);
     var vp = mul4(proj, view);
 
     // Sun, sky and water optics.
@@ -2410,7 +2411,7 @@
     if (spray.n) {
       gl.bindBuffer(gl.ARRAY_BUFFER, spray.buf);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, spray.data, 0, spray.n * 8);
-      var fw = norm3(camera.fwd), rt = norm3(cross3(fw, [0, 1, 0])), upc = cross3(rt, fw);
+      var fw = norm3(camera.fwd), rt = norm3(cross3(fw, camera.up || [0, 1, 0])), upc = cross3(rt, fw);
       gl.depthMask(false);
       gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       this.progSpray.use().set(common).set({ uViewProj: vp, uCamRight: rt, uCamUp: upc });
