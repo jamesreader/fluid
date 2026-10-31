@@ -24,6 +24,8 @@
  *   (g) play.js: floating objects settle at their Archimedes draught and
  *       drift with the swell, rocks sink, and the boat planes, turns,
  *       leaves a wake and throws spray.
+ *   (g2) the surfboard paddles to ~2 m/s, a breaker-size wave picks it up,
+ *       the rider stands and rides the face faster than 5 m/s.
  *
  * Exits 0 on pass, non-zero with a FAIL message otherwise.
  */
@@ -241,6 +243,32 @@ console.log("--- (g) floating things and the boat ---");
   console.log("    boat top speed " + (maxV * 1.944).toFixed(0) + " kn, heading after turning " + (b.hdg * 180 / Math.PI).toFixed(0) + " deg, wake drops " + drops + ", spray up to " + spray + " drops in the air");
   if (finite && maxV > 8 && maxV < 22 && b.hdg > 0.5 && drops > 1000 && spray > 50) pass("(g) the boat planes, turns, leaves a wake and throws spray");
   else fail("(g) boat: finite " + finite + ", top " + maxV.toFixed(1) + " m/s, heading " + b.hdg.toFixed(2) + ", drops " + drops + ", spray " + pg.pN);
+})();
+
+// --------------------------------------------------------------- (g2)
+(function () {
+  console.log("--- (g2) the surfboard ---");
+  var Play = require("./play.js");
+  var pg = new Play.Playground({ heightAt: function () { return -6; } }, function () { return -6; });
+  // a 1.5 m breaker-steep hump running at 6.5 m/s through 6 m of water
+  function eta(x, t) { var u = (x - (6.5 * t - 30)) / 4.5; return 1.5 * Math.exp(-u * u); }
+  pg.spawnBoard(0, 0, 0);
+  var t = 0, dt = 1 / 60, paddle2 = 0, stoodAt = -1, top = 0, finite = true;
+  for (var i = 0; i < 60 * 12; i++) {
+    var pts = pg.probePoints(), H = new Float32Array(Play.MAX_PROBES);
+    for (var k = 0; k < Play.MAX_PROBES; k++) H[k] = eta(pts[k][0], t);
+    pg.setProbes(H);
+    pg.updateBoard(dt, pg.board.standing ? 0 : 1, 0);
+    t += dt;
+    var b = pg.board, sp = Math.hypot(b.vel[0], b.vel[2]);
+    if (t < 3) paddle2 = sp;
+    if (b.standing && stoodAt < 0) stoodAt = t;
+    if (b.standing) top = Math.max(top, sp);
+    if (![b.pos[0], b.pos[1], b.pos[2], b.pitch, b.roll, b.hdg].every(isFinite)) finite = false;
+  }
+  console.log("    paddling " + paddle2.toFixed(1) + " m/s after 3 s, up on the wave at " + stoodAt.toFixed(1) + " s, riding up to " + top.toFixed(1) + " m/s");
+  if (finite && paddle2 > 1.5 && paddle2 < 3 && stoodAt > 0 && top > 5) pass("(g2) the board paddles, catches the wave, stands and rides it");
+  else fail("(g2) board: finite " + finite + ", paddle " + paddle2 + ", stood " + stoodAt + ", top " + top);
 })();
 
 console.log("");

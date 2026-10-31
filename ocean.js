@@ -1362,6 +1362,11 @@
     "    else if (part == 3) alb = vec3(0.90, 0.90, 0.88);",
     "    else if (part == 4) alb = vec3(0.05, 0.05, 0.06);",
     "    else alb = vec3(0.04, 0.05, 0.06);",
+    "  } else if (k == 24) {",                         // the surfboard: waxed deck, stringer, tinted bottom, fins
+    "    int part = int(vPart + 0.5);",
+    "    if (part == 1) alb = abs(vLocal.z) < 0.006 ? vec3(0.45, 0.30, 0.18) : vec3(0.92, 0.91, 0.87) * (0.94 + 0.06 * vnoise(vLocal.xz * 60.0));",
+    "    else if (part == 0) alb = vLocal.x > 0.55 ? vec3(0.95, 0.42, 0.20) : vec3(0.20, 0.55, 0.75);",
+    "    else alb = vec3(0.06, 0.06, 0.07);",
     "  } else alb = vec3(0.5);",
     "  float z = max(-P.y, 0.0);",
     "  float shadow = terrainShadow(P, 0.0) * sunVis(P + n * 0.05, 0.002);",

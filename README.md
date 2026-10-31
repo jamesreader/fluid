@@ -109,12 +109,19 @@ turtles that surface to breathe, and spotted eagle rays over the sand.
   bore that climbs faster than you can float dunks you. Wave faces push you
   along, `WASD` paddles, the view sways with the water, and `R` takes you
   back out past the break.
+- **surf**: a shortboard out the back of the nearest break, facing the
+  beach. `W` paddles (lying down, ~2 m/s), `A`/`D` turns. When a wave picks
+  you up and you run down its face you pop up: the board planes, the fins
+  grip, `A`/`D` carves (spray off the rail) and you ride at 20-30 km/h.
+  Lose the wave and you sink back to paddling; nose-dive down a face too
+  steep, or land a jump badly, and you go over the falls. `R` paddles back
+  out.
 
 Spray flies off splashes, the bow and the lips of breaking waves. `sound`
 (or `M`) turns on a synthesised soundscape: surf roar and crashing lips near
 you, wind, the outboard, splashes, and a muffled world under water.
 
-Also: `P` pause · `R` reset view · `H` panel · `F` fullscreen. On touch: drag
+Also: `N` night (Clear Lagoon II) · `P` pause · `R` reset view · `H` panel · `F` fullscreen. On touch: drag
 to look, two-finger drag to fly, pinch to climb or dive; in touch mode one
 finger is your hand, in boat mode it's the stick. The panel sets surf, wind,
 fetch, choppiness, foam, clarity, caustics, sun, clouds and render quality.
@@ -151,8 +158,9 @@ adds:
   depth, then refraction, reflection, sunlight through the thin lip and foam
   as it aerates. The panel's `lip throw` sets how readily they form;
   `simulate the surf` switches back to the analytic waves.
-- **Float** (tool `5`, also in v1): here the surf currents carry you too,
-  shoreward in the whitewater and back out with the backwash.
+- **Float** and **surf** (tools `5` and `6`, also in v1): here the surf
+  currents carry you too, shoreward in the whitewater and back out with the
+  backwash, and the board's fins and drag work against the moving water.
 - **Night** (`N`, or the `night` slider): the moon takes the sun's place,
   with stars, the Milky Way, a moonlit glitter path and night-adapted colour,
   and crickets sing from the island.

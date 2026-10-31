@@ -120,6 +120,7 @@
       <button class="tbtn tool" data-tool="throw" title="3: click to throw; X picks what">throw</button>
       <button class="tbtn tool" data-tool="boat" title="4: drive the boat (W/S throttle, A/D steer)">boat</button>
       <button class="tbtn tool" data-tool="float" title="5: float on the water and ride the swell (WASD paddle)">float</button>
+      <button class="tbtn tool" data-tool="surf" title="6: surf (W paddle, A/D carve; catch a wave to stand up)">surf</button>
     </div>
     <div class="chip" id="hud-tool"><span>throw</span> <span id="hud-item">beach ball</span></div>
     <button class="tbtn" id="ui-opts" title="options (H) — waves, water, sky, render">⚙</button>
@@ -176,6 +177,8 @@ function lagoonMain() {
     });
     renderer.addDynamicKind("boat", Play.boatMesh(), 23, 1);
     renderer.setDynamic("boat", function (out, O) { return play.writeBoat(out, O); });
+    renderer.addDynamicKind("board", Play.boardMesh(), 24, 1);
+    renderer.setDynamic("board", function (out, O) { return play.writeBoard(out, O); });
     renderer.setSpray(function (out, O) { return play.writeSpray(out, O); });
   } catch (e) {
     document.getElementById("msg-text").textContent = e.message + " Try a recent Chrome, Edge, Firefox or Safari.";
@@ -209,6 +212,12 @@ function lagoonMain() {
     return [Math.cos(cam.pitch) * Math.cos(cam.yaw), Math.sin(cam.pitch), Math.cos(cam.pitch) * Math.sin(cam.yaw)];
   }
   function look(dx, dy) {
+    if (tool === "surf" && play && play.board) {     // the rider's head turns; the board goes where it's steered
+      surfLook.yaw = Math.max(-2.4, Math.min(2.4, surfLook.yaw + dx * 0.0032 * (cam.fov / 1.08)));
+      surfLook.pitch = Math.max(-1.2, Math.min(0.9, surfLook.pitch - dy * 0.0032 * (cam.fov / 1.08)));
+      hideTip();
+      return;
+    }
     if (tool === "boat" && play && play.boat) {
       orbit.yaw += dx * 0.005;
       orbit.pitch = Math.max(-0.1, Math.min(1.2, orbit.pitch + dy * 0.004));
@@ -228,14 +237,14 @@ function lagoonMain() {
     if (e.target && /INPUT|SELECT|TEXTAREA|BUTTON/.test(e.target.tagName)) return;
     var k = e.key.toLowerCase();
     keys[e.code] = true;
-    if (k >= "1" && k <= "5") { setTool(["fly", "touch", "throw", "boat", "float"][+k - 1]); return; }
+    if (k >= "1" && k <= "6") { setTool(["fly", "touch", "throw", "boat", "float", "surf"][+k - 1]); return; }
     if (k === "x") { throwKind = (throwKind + 1) % Play.KINDS.length; syncTool(); return; }
     if (k === "m") { toggleSound(); return; }
     if (k === "n") { nightGoal = params.night < 0.5 ? 1 : 0; return; }
     if (k === "h" || k === "o") { togglePanel(); e.preventDefault(); }
     else if (k === "p") { setPaused(!paused); }
     else if (k === "f") { toggleFullscreen(); }
-    else if (k === "r") { if (tool === "boat" && play.boat) respawnBoat(); else if (tool === "float") startFloat(true); else resetView(); }
+    else if (k === "r") { if (tool === "boat" && play.boat) respawnBoat(); else if (tool === "float") startFloat(true); else if (tool === "surf") startSurf(); else resetView(); }
     if (e.code === "Space" || e.code.indexOf("Arrow") === 0) e.preventDefault();
   });
   window.addEventListener("keyup", function (e) { keys[e.code] = false; });
@@ -278,7 +287,7 @@ function lagoonMain() {
     if (!click) return;
     if (tool === "throw") { throwAt([e.clientX, e.clientY]); return; }
     // in fly mode a click asks for mouse look; Esc gives the cursor back
-    if ((tool === "fly" || tool === "float") && cv.requestPointerLock) {
+    if ((tool === "fly" || tool === "float" || tool === "surf") && cv.requestPointerLock) {
       try { var pr = cv.requestPointerLock(); if (pr && pr.catch) pr.catch(function () {}); } catch (err) {}
     }
   });
@@ -348,30 +357,33 @@ function lagoonMain() {
 
   // ------------------------------------------------------------- tools
   var tool = "fly", throwKind = 0, hand = null, hover = null, stick = [0, 0];
-  var orbit = { yaw: 0, pitch: 0.2 }, hint = document.getElementById("hint");
+  var orbit = { yaw: 0, pitch: 0.2 }, surfLook = { yaw: 0, pitch: -0.12 }, hint = document.getElementById("hint");
   var HINTS = {
     fly: "<kbd>click</kbd> mouse look &nbsp; <kbd>WASD</kbd> move &nbsp; <kbd>Space</kbd>/<kbd>E</kbd> up &nbsp; <kbd>Q</kbd>/<kbd>C</kbd> down &nbsp; <kbd>Shift</kbd> fast &nbsp; <kbd>1-4</kbd> tools &nbsp; <kbd>N</kbd> night &nbsp; <kbd>H</kbd> panel",
     touch: "<kbd>drag</kbd> through the water &nbsp; <kbd>right-drag</kbd> look &nbsp; <kbd>WASD</kbd> move &nbsp; <kbd>1-4</kbd> tools",
     throw: "<kbd>click</kbd> throw &nbsp; <kbd>X</kbd> beach ball / coconut / rock &nbsp; <kbd>drag</kbd> look &nbsp; <kbd>WASD</kbd> move",
     boat: "<kbd>W</kbd>/<kbd>S</kbd> throttle &nbsp; <kbd>A</kbd>/<kbd>D</kbd> steer &nbsp; <kbd>drag</kbd> look around &nbsp; <kbd>R</kbd> new boat &nbsp; <kbd>1</kbd> get out",
     float: "<kbd>click</kbd> mouse look &nbsp; <kbd>WASD</kbd> paddle &nbsp; <kbd>R</kbd> back to open water &nbsp; <kbd>1</kbd> fly away",
+    surf: "<kbd>W</kbd> paddle &nbsp; <kbd>A</kbd>/<kbd>D</kbd> turn and carve &nbsp; catch a wave to stand &nbsp; <kbd>click</kbd> look &nbsp; <kbd>R</kbd> paddle back out &nbsp; <kbd>1</kbd> fly away",
   };
   var toolBtns = Array.prototype.slice.call(document.querySelectorAll(".tool"));
   toolBtns.forEach(function (b) { b.addEventListener("click", function () { setTool(b.getAttribute("data-tool")); }); });
   function setTool(t) {
     if (t === tool) return;
-    if (document.pointerLockElement && t !== "fly" && t !== "throw" && t !== "float") document.exitPointerLock();
+    if (document.pointerLockElement && t !== "fly" && t !== "throw" && t !== "float" && t !== "surf") document.exitPointerLock();
     if (tool === "float") { play.stopFloat(); cam.pos[1] += 1.5; }
+    if (tool === "surf") { play.removeBoard(); cam.pos[1] += 1.5; }
     tool = t; hand = null;
     if (t === "float") startFloat();
+    if (t === "surf") startSurf();
     if (t === "boat" && !play.boat) respawnBoat();
     if (t !== "boat" && play.boat) { play.boat.throttle = 0; play.boat.steer = 0; }
     syncTool(); hideTip();
   }
   function syncTool() {
     toolBtns.forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-tool") === tool); });
-    document.getElementById("hud-tool").hidden = tool !== "throw" && tool !== "boat";
-    document.getElementById("hud-tool").firstChild.textContent = tool === "boat" ? "boat" : "throw";
+    document.getElementById("hud-tool").hidden = tool !== "throw" && tool !== "boat" && tool !== "surf";
+    document.getElementById("hud-tool").firstChild.textContent = tool === "boat" ? "boat" : tool === "surf" ? "surf" : "throw";
     hint.innerHTML = HINTS[tool];
   }
   // Into the water below the camera, or the nearest water at least waist
@@ -385,6 +397,34 @@ function lagoonMain() {
     if (!best) best = [cam.pos[0], cam.pos[2]];
     play.startFloat(best[0], best[1]);
     cam.pos = play.floater.pos.slice(); cam.pitch = Math.max(-0.3, Math.min(0.3, cam.pitch));
+  }
+  // Out the back of the nearest break: water about to break (the swell
+  // shoaling, not yet broken) at least chest deep, facing the way the waves
+  // run so the next set can pick you up.
+  function startSurf() {
+    var w = world, best = null;
+    for (var r = 0; r < 700 && !best; r += 6) for (var a = 0; a < (r ? 36 : 1); a++) {
+      var ang = cam.yaw + a / 36 * Math.PI * 2, x = cam.pos[0] + Math.cos(ang) * r, z = cam.pos[2] + Math.sin(ang) * r;
+      var st = w.bilinear(w.stage, x, z, 0), d = -renderer.groundHeightAt(x, z);
+      if (st > 0.55 && st < 0.8 && d > 1.8 && w.bilinear(w.waveH, x, z, 0) > 0.6) { best = [x, z]; break; }
+    }
+    if (!best) { best = [cam.pos[0], cam.pos[2]]; }
+    var dx = w.bilinear(w.dirX, best[0], best[1], 0), dz = w.bilinear(w.dirZ, best[0], best[1], 0);
+    play.spawnBoard(best[0], best[1], Math.atan2(dz, dx));
+    surfLook.yaw = 0; surfLook.pitch = -0.12;
+  }
+  // The rider: lying on the board to paddle, standing to ride, tumbling
+  // under water after a wipeout.
+  function rideBoard(dt) {
+    var b = play.board;
+    var paddle = (keys.KeyW || keys.ArrowUp ? 1 : 0) + Math.max(0, stick[1]);
+    var steer = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0) + stick[0];
+    if (paddle || steer) hideTip();
+    play.updateBoard(paused ? 0 : dt * params.timeScale, clamp(paddle, 0, 1), clamp(steer, -1, 1));
+    var c = Math.cos(b.hdg), s = Math.sin(b.hdg), up = 0.38 + 1.12 * b.stand, ahead = 0.3 - 0.45 * b.stand;
+    cam.pos = [b.pos[0] + c * ahead, b.pos[1] + up, b.pos[2] + s * ahead];
+    if (b.wipe > 0) cam.pos[1] = b.pos[1] - 0.7 - 0.3 * Math.sin(b.wipe * 3);   // held down
+    cam.yaw = b.hdg + surfLook.yaw; cam.pitch = surfLook.pitch + b.pitch * 0.6;
   }
   // A boat on deep enough water near the camera, pointing where you look.
   function respawnBoat() {
@@ -509,6 +549,7 @@ function lagoonMain() {
 
   function moveCamera(dt) {
     if (tool === "boat" && play.boat) { driveBoat(dt); return; }
+    if (tool === "surf" && play.board) { rideBoard(dt); return; }
     if (tool === "float" && play.floater) {
       var cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), px = 0, pz = 0;
       if (keys.KeyW || keys.ArrowUp) { px += cy; pz += sy; }
@@ -683,7 +724,13 @@ function lagoonMain() {
   // Floating, the view leans with the water: tip forward and up by most of
   // the tilt of the surface under you (Rodrigues rotation from straight up).
   function viewCamera() {
-    var f = fwd(), fl = play.floater;
+    var f = fwd(), fl = play.floater, bd = play.board;
+    if (tool === "surf" && bd) {
+      // lean with the board's roll (a carve, the face tilting it); spin in a wipeout
+      var ro = bd.roll * 0.7 + (bd.wipe > 0 ? bd.wipe * 2.6 : 0), rx = -f[2], rz = f[0], rl = Math.hypot(rx, rz) || 1;
+      var rt = [rx / rl, 0, rz / rl], u0 = [rt[1] * f[2] - rt[2] * f[1], rt[2] * f[0] - rt[0] * f[2], rt[0] * f[1] - rt[1] * f[0]];
+      return { pos: cam.pos, fwd: f, up: [u0[0] * Math.cos(ro) + rt[0] * Math.sin(ro), u0[1] * Math.cos(ro), u0[2] * Math.cos(ro) + rt[2] * Math.sin(ro)], fov: cam.fov, near: 0.08 };
+    }
     if (tool !== "float" || !fl) return { pos: cam.pos, fwd: f, fov: cam.fov };
     var n = fl.n, ax = [n[2], 0, -n[0]], al = Math.hypot(ax[0], ax[2]);
     if (al < 1e-5) return { pos: cam.pos, fwd: f, fov: cam.fov, near: 0.08 };
@@ -730,6 +777,7 @@ function lagoonMain() {
       hudAlt.textContent = cam.pos[1].toFixed(1) + " m";
       var item = document.getElementById("hud-item");
       if (tool === "boat" && play.boat) item.textContent = (Math.hypot(play.boat.vel[0], play.boat.vel[2]) * 1.944).toFixed(0) + " kn";
+      else if (tool === "surf" && play.board) { var bb = play.board; item.textContent = (bb.wipe > 0 ? "wiped out" : bb.standing ? "riding " + (Math.hypot(bb.vel[0], bb.vel[2]) * 3.6).toFixed(0) + " km/h" : "paddling"); }
       else item.textContent = Play.KINDS[throwKind].name;
       var gh = renderer.groundHeightAt(cam.pos[0], cam.pos[2]);
       hudFloor.textContent = gh < 0 ? (-gh).toFixed(1) + " m deep" : "land " + gh.toFixed(0) + " m";

@@ -93,6 +93,11 @@
     }
     var f = this.floater;
     if (f) [[0, 0], [FLOAT_D, 0], [-FLOAT_D, 0], [0, FLOAT_D], [0, -FLOAT_D]].forEach(function (d, k) { pts[FLOAT_SLOT + k] = [f.pos[0] + d[0], f.pos[2] + d[1]]; });
+    var bd = this.board;   // (the board uses the same slots: you float or you surf)
+    if (bd) {
+      var cb = Math.cos(bd.hdg), sb = Math.sin(bd.hdg);
+      BOARD.forEach(function (h, k) { pts[FLOAT_SLOT + k] = [bd.pos[0] + cb * h[0] - sb * h[1], bd.pos[2] + sb * h[0] + cb * h[1]]; });
+    }
     this._pts = pts;
     return pts;
   };
@@ -397,6 +402,7 @@
   // strokes paddle, and the surface's tilt sways your view.
   var EYE = 0.35, FLOAT_D = 0.7;
   Playground.prototype.startFloat = function (x, z) {
+    this.board = null;
     this.floater = { pos: [x, this.ground(x, z) < 0 ? EYE : this.ground(x, z) + EYE, z], vel: [0, 0, 0], n: [0, 1, 0], age: 0, wet: false };
   };
   Playground.prototype.stopFloat = function () { this.floater = null; };
@@ -438,6 +444,102 @@
     }
     f.wet = under;
     if (ok && this.rnd() < dt * (2 + 6 * Math.hypot(stroke[0], stroke[1]))) this.drop(f.pos[0], f.pos[2], 0.35, -0.25 - 0.4 * Math.hypot(stroke[0], stroke[1]), 0.05);
+  };
+
+  // --------------------------------------------------------- the surfboard
+  // A very small boat with no engine. Five probes float it; lying down you
+  // paddle it up to ~2 m/s; a wave face pushes it down the slope, and once
+  // it runs fast on a face you pop up: the board planes (little drag), the
+  // fins grip, and leaning carves it across the face. Lose the wave and you
+  // sink back to paddling; nose-dive down a face too steep and you go over
+  // the falls.
+  var BOARD = [[1.0, 0], [-1.0, 0], [0, -0.28], [0, 0.28], [0, 0]];   // nose, tail, left rail, right rail, middle
+  Playground.prototype.spawnBoard = function (x, z, hdg) {
+    this.floater = null;
+    this.board = { pos: [x, 0, z], hdg: hdg, pitch: 0, roll: 0, vel: [0, 0, 0], yawRate: 0, paddle: 0, steer: 0,
+      standing: false, stand: 0, slow: 0, wipe: 0, air: 0, age: 0 };
+    return this.board;
+  };
+  Playground.prototype.removeBoard = function () { this.board = null; };
+  Playground.prototype.updateBoard = function (dt, paddle, steer) {
+    var b = this.board;
+    dt = Math.min(dt, 0.05);
+    if (!b || dt <= 0) return;
+    b.age += dt;
+    var ok = this.probeOK && b.age > 0.25, P = this.probeH, s0 = FLOAT_SLOT, k;
+    var H = [];
+    for (k = 0; k < 5; k++) H.push(ok ? P[s0 + k] : b.pos[1]);
+    var c = Math.cos(b.hdg), s = Math.sin(b.hdg), side = [-s, c];
+    var g = this.ground(b.pos[0], b.pos[2]);
+    if (ok && b.age < 0.5) { b.pos[1] = H[4]; b.vel[1] = 0; }
+    // the water's own motion (surf currents): fins and drag act on the difference
+    var cx = ok ? this.probeC[(s0 + 4) * 3] : 0, cz = ok ? this.probeC[(s0 + 4) * 3 + 1] : 0;
+    var rvx = b.vel[0] - cx, rvz = b.vel[2] - cz;
+    var speedF = rvx * c + rvz * s, speedS = rvx * side[0] + rvz * side[1];
+    // float: a stiff spring to the surface (board plus rider sit ~4 cm in);
+    // out of the water it falls
+    var d = H[4] - b.pos[1], wet = clamp((d + 0.03) / 0.08, 0, 1), was = b.air;
+    b.air = wet <= 0 ? b.air + dt : 0;
+    b.vel[1] += (d > -0.03 ? 70 * Math.min(d - 0.04, 0.6) - 8 * b.vel[1] : -G) * dt;
+    // trim to the water under it, leaning into a carve
+    b.stand += ((b.standing ? 1 : 0) - b.stand) * Math.min(1, 4 * dt);
+    var tPitch = Math.atan2(H[0] - H[1], 2.0), tRoll = Math.atan2(H[2] - H[3], 0.56) - b.steer * clamp(speedF, 0, 9) * 0.045 * b.stand;
+    var kt = wet > 0 ? Math.min(1, 10 * dt) : 0;
+    b.pitch += (tPitch - b.pitch) * kt; b.roll += (tRoll - b.roll) * kt;
+    // down the face, paddling, drag (much less on the plane), fins
+    var slF = (H[0] - H[1]) / 2.0, slS = (H[3] - H[2]) / 0.56;
+    var aF = -G * slF * wet, aS = -G * slS * wet;
+    // on a face the water itself surges forward up the slope and carries the board
+    if (slF < 0) aF -= G * slF * 0.7 * wet;
+    if (!b.standing) aF += paddle * 1.9 * wet;
+    aF -= speedF * (b.standing ? 0.03 + 0.005 * Math.abs(speedF) : 0.5 + 0.12 * Math.abs(speedF)) * wet;
+    aS -= speedS * (b.standing ? 5.5 : 2.5) * wet;
+    b.vel[0] += (c * aF + side[0] * aS) * dt;
+    b.vel[2] += (s * aF + side[1] * aS) * dt;
+    // turning: a slow sweep lying down, a carve standing (more with speed)
+    var tYaw = b.steer * (b.standing ? clamp(0.5 + 0.13 * Math.abs(speedF), 0, 1.7) : 0.9) * (wet > 0 ? 1 : 0.2);
+    b.yawRate += (tYaw - b.yawRate) * Math.min(1, 5 * dt);
+    b.hdg += b.yawRate * dt;
+    b.steer += (steer - b.steer) * Math.min(1, 6 * dt);
+    b.pos[0] += b.vel[0] * dt; b.pos[1] += b.vel[1] * dt; b.pos[2] += b.vel[2] * dt;
+    // the sand: stop on the beach, slide up it a little
+    if (b.pos[1] < g + 0.08) { b.pos[1] = g + 0.08; b.vel[1] = Math.max(b.vel[1], 0); var fr = Math.exp(-4 * dt); b.vel[0] *= fr; b.vel[2] *= fr; }
+    // catching a wave: running fast down a face, you pop up (speed over the
+    // ground: on a crest the water itself surges forward with you)
+    var groundF = b.vel[0] * c + b.vel[2] * s;
+    if (b.wipe > 0) { b.wipe -= dt; b.standing = false; }
+    else if (!b.standing && wet > 0 && groundF > 2.6 && slF < -0.04) b.standing = true;
+    else if (b.standing) {
+      b.slow = groundF < 1.6 ? b.slow + dt : 0;
+      if (b.slow > 0.7) b.standing = false;                              // the wave rolled on without you
+      if (b.pitch < -0.6 || (was > 0.5 && wet > 0)) {                    // over the falls
+        b.wipe = 1.8; b.standing = false;
+        b.vel[0] *= 0.25; b.vel[2] *= 0.25;
+        this.splash(b.pos[0], H[4], b.pos[2], 0.8, 4);
+      }
+    }
+    // the board in the water: a rail cutting through it, spray off a fast carve
+    var sp = Math.hypot(b.vel[0], b.vel[2]);
+    if (wet > 0 && sp > 0.4 && this.rnd() < dt * 10) this.drop(b.pos[0] - c * 0.9, b.pos[2] - s * 0.9, 0.45, -Math.min(sp, 8) * 0.06, b.standing ? 0.06 : 0.02);
+    if (wet > 0 && b.standing && Math.abs(b.yawRate) > 0.5 && speedF > 4) {
+      var n = Math.min(Math.floor((Math.abs(b.yawRate) - 0.5) * speedF * 6 * dt + this.rnd()), 12), sd = b.yawRate > 0 ? -1 : 1;
+      for (k = 0; k < n; k++) this.emit(b.pos[0] - c * 0.6 + side[0] * sd * 0.3, b.pos[1] + 0.02, b.pos[2] - s * 0.6 + side[1] * sd * 0.3,
+        side[0] * sd * (2 + this.rnd() * 3) + c * speedF * 0.3, 1.5 + this.rnd() * 2.5, side[1] * sd * (2 + this.rnd() * 3) + s * speedF * 0.3, 0.04 + this.rnd() * 0.08, 0.5 + this.rnd() * 0.4);
+    }
+  };
+  Playground.prototype.boardQuat = function () {
+    var b = this.board;
+    var qy = quatAxis(0, 1, 0, -b.hdg), qp = quatAxis(0, 0, 1, b.pitch), qr = quatAxis(1, 0, 0, b.roll);
+    return quatNorm(quatMul(qy, quatMul(qp, qr)));
+  };
+  Playground.prototype.writeBoard = function (out, O) {
+    var b = this.board;
+    if (!b) return 0;
+    var q = this.boardQuat();
+    out[0] = b.pos[0] - O[0]; out[1] = b.pos[1]; out[2] = b.pos[2] - O[1]; out[3] = 1;
+    out[4] = q[0]; out[5] = q[1]; out[6] = q[2]; out[7] = q[3];
+    out[8] = 0; out[9] = 0; out[10] = 0; out[11] = 0;
+    return 1;
   };
 
   Playground.prototype.update = function (dt, time, cam, surf) {
@@ -529,8 +631,35 @@
     return S.done();
   }
 
+  // A shortboard: 2.0 m, pulled-in nose, squash tail, domed deck, three fins.
+  function boardMesh() {
+    var S = new Soup(), st = [], NST = 16, i;
+    for (i = 0; i <= NST; i++) {
+      var x = -0.95 + 1.95 * i / NST, u = (x + 0.95) / 1.95;
+      var half = 0.27 * Math.pow(Math.sin(Math.PI * Math.min(1, 0.12 + 0.88 * u)), 0.55) * (1 - 0.25 * u * u);
+      if (i === 0) half = 0.17; if (i === NST) half = 0.004;
+      var rock = 0.07 * Math.pow(u, 3) + 0.02 * Math.pow(1 - u, 2);       // nose and tail lift
+      st.push({ x: x, half: half, y0: rock - 0.025, y1: rock + 0.035 + 0.012 * Math.sin(Math.PI * u) });
+    }
+    for (i = 0; i < NST; i++) {
+      var a = st[i], b = st[i + 1];
+      S.quad([a.x, a.y1, -a.half * 0.6], [a.x, a.y1, a.half * 0.6], [b.x, b.y1, b.half * 0.6], [b.x, b.y1, -b.half * 0.6], 1);   // deck
+      S.quad([a.x, a.y1, a.half * 0.6], [a.x, a.y0 + 0.03, a.half], [b.x, b.y0 + 0.03, b.half], [b.x, b.y1, b.half * 0.6], 1);   // rails
+      S.quad([a.x, a.y1, -a.half * 0.6], [b.x, b.y1, -b.half * 0.6], [b.x, b.y0 + 0.03, -b.half], [a.x, a.y0 + 0.03, -a.half], 1);
+      S.quad([a.x, a.y0 + 0.03, a.half], [a.x, a.y0, 0], [b.x, b.y0, 0], [b.x, b.y0 + 0.03, b.half], 0);                   // bottom
+      S.quad([a.x, a.y0 + 0.03, -a.half], [b.x, b.y0 + 0.03, -b.half], [b.x, b.y0, 0], [a.x, a.y0, 0], 0);
+    }
+    var t = st[0];
+    S.quad([t.x, t.y0 + 0.03, -t.half], [t.x, t.y0, 0], [t.x, t.y0 + 0.03, t.half], [t.x, t.y1, 0], 0);                       // squash tail
+    [[-0.78, 0], [-0.62, -0.12], [-0.62, 0.12]].forEach(function (f) {
+      S.tri([f[0], st[1].y0, f[1]], [f[0] - 0.11, st[1].y0, f[1]], [f[0] - 0.1, st[1].y0 - 0.11, f[1]], 2);
+      S.tri([f[0], st[1].y0, f[1]], [f[0] - 0.1, st[1].y0 - 0.11, f[1]], [f[0] - 0.11, st[1].y0, f[1]], 2);
+    });
+    return S.done();
+  }
+
   return {
     Playground: Playground, KINDS: KINDS, MAX_PROBES: MAX_PROBES, MAX_PART: MAX_PART, MAX_OBJ: MAX_OBJ,
-    capFraction: capFraction, sphereMesh: sphereMesh, boatMesh: boatMesh,
+    capFraction: capFraction, sphereMesh: sphereMesh, boatMesh: boatMesh, boardMesh: boardMesh,
   };
 });

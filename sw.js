@@ -8,7 +8,7 @@
  * don't re-fetch an unchanged sw.js). Forgetting the bump strands old installs
  * on old physics mixed with fresh HTML, which reads as "UI fine, simulation
  * dead". */
-var CACHE = "sphfluid-v10";
+var CACHE = "sphfluid-v11";
 var ASSETS = [
   "./",
   "./index.html",
