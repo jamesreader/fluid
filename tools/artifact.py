@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Build Clear Lagoon (v1) or Clear Lagoon II (v2) as one self-contained page.
 
-    python3 tools/artifact.py v1 out.html
-    python3 tools/artifact.py v2 out.html
+    python3 tools/artifact.py v1 out.html [--full]
+    python3 tools/artifact.py v2 out.html [--full]
+
+--full keeps the document skeleton (doctype, head, body) for hosts that take
+a complete page; without it the page body is left for a host that wraps it.
 
 Inlines the page's modules, drops what only works on the deployed site
 (manifest, icons, service worker, the v1/v2 compare link, the link to the
@@ -10,7 +13,7 @@ Inlines the page's modules, drops what only works on the deployed site
 """
 import re, sys
 
-which, out = sys.argv[1], sys.argv[2]
+which, out, full = sys.argv[1], sys.argv[2], '--full' in sys.argv[3:]
 root, up, title = ('.', '', 'Clear Lagoon') if which == 'v1' else ('v2', '../', 'Clear Lagoon II')
 html = open(root + '/ocean.html').read()
 
@@ -25,10 +28,10 @@ def cut_re(pattern):
     assert m, pattern
     html = html[:m.start()] + '\n' + html[m.end():]
 
-for tag in ['<!DOCTYPE html>\n', '<html lang="en">\n', '<head>\n', '</head>\n', '<body>\n', '</body>\n', '</html>\n',
+skeleton = ['<!DOCTYPE html>\n', '<html lang="en">\n', '<head>\n', '</head>\n', '<body>\n', '</body>\n', '</html>\n',
             '<meta charset="utf-8">\n',
-            '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n',
-            '<meta name="theme-color" content="#0b0f14">\n',
+            '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n']
+for tag in ([] if full else skeleton) + ['<meta name="theme-color" content="#0b0f14">\n',
             '<link rel="manifest" href="%smanifest.webmanifest">\n' % up,
             '<link rel="icon" type="image/png" sizes="192x192" href="%sicons/icon-192.png">\n' % up]:
     cut(tag)
